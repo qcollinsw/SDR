@@ -1,4 +1,4 @@
-
+%% Boilerplate code for live video streaming on MATLAB. We will build off of this to transmit video streams.
 %% Setup
 
 % Clear workspace
