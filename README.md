@@ -6,4 +6,4 @@
 * Marlon Hernandez
 
 ## Abtract
-Stream live webcam footage from Laptop 1 into matlab. Compress those images. Send those images over QPSK (eventually 64 QAM) using a PlutoSDR. Recover the image on the receiving SDR. Decompress the image. Display the image on Laptop 2. 
+Stream live webcam footage from Laptop 1 into matlab. JPEG compress those images. Send those images over QPSK (eventually 64 QAM) using a PlutoSDR. Recover the image on the receiving SDR. Decompress the JPEG image. Display the image on Laptop 2. 
