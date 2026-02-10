@@ -2,6 +2,7 @@
 
 % Clear workspace
 clear  
+close all
 % Connect to the first webcam
 cam = webcam(1);
 
