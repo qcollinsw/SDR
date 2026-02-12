@@ -8,7 +8,7 @@ LD = $(CC)
  
 MODEL     = FULLsystem
 TARGET      = cgxe
-MODULE_SRCS   = m_i9azVV8YBdON9Q1z2DEctE.c m_niTmpJHQCzOVNihACk1EcE.c
+MODULE_SRCS   = m_gzVOtmwirXM3Cia4UeMwJ.c m_niTmpJHQCzOVNihACk1EcE.c
 MODEL_SRC  = FULLsystem_cgxe.c
 MODEL_REG = FULLsystem_cgxe_registry.c
 MAKEFILE    = FULLsystem_cgxe.gmk
