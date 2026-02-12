@@ -8,7 +8,7 @@ LD = $(CC)
  
 MODEL     = FULLsystem
 TARGET      = cgxe
-MODULE_SRCS   = m_niTmpJHQCzOVNihACk1EcE.c
+MODULE_SRCS   = m_i9azVV8YBdON9Q1z2DEctE.c m_niTmpJHQCzOVNihACk1EcE.c
 MODEL_SRC  = FULLsystem_cgxe.c
 MODEL_REG = FULLsystem_cgxe_registry.c
 MAKEFILE    = FULLsystem_cgxe.gmk
@@ -43,7 +43,7 @@ LDFLAGS =
 AUXLDFLAGS = 
 #----------------------------- Source Files -----------------------------------
  
-THIRD_PARTY_SRCS =   
+THIRD_PARTY_SRCS = C:/Github/SDR/VideoStream/slprj/_cgxe/FULLsystem/src/signLib.c  
 REQ_SRCS  = $(MODEL_SRC) $(MODEL_REG) $(MODULE_SRCS) $(THIRD_PARTY_SRCS) 
 
 USER_OBJS =

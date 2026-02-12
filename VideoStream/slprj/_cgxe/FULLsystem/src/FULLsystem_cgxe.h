@@ -10,6 +10,9 @@
 #include "cgxert.h"
 #include "cgxeooprt.h"
 #include "slccrt.h"
+#include <string.h>
+#include "math.h"
+#include "signLib.h"
 #include <time.h>
 #define rtInf                          (mxGetInf())
 #define rtMinusInf                     (-(mxGetInf()))
