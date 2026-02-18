@@ -1,0 +1,22 @@
+# matlab autosave / backups
+*.asv
+*.autosave
+*.m~
+*.slx.autosave
+
+# simulink cache + codegen
+slprj/
+*.slxc
+*_cgxe.*
+*.mex*
+*.r20*
+*.mdl.r20*
+
+# mex binaries
+*.mexw64
+*.mexmaci64
+*.mexa64
+
+# os junk
+.DS_Store
+Thumbs.db
