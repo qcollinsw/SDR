@@ -15,7 +15,7 @@ p.scaleTx = (p.M-1)/255;
 p.scaleRx = 255/(p.M-1);
 p.sps = 4;
 p.Fs = 520000;
-p.freqOffsetHz = 0.15;
+p.freqOffsetHz = 100;
 
 fec.n = 63;
 fec.k = 51;
