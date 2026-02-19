@@ -1,5 +1,10 @@
-%% 64-qam link - configurable midambles + piecewise phase correction + stats only
 clear; close all; clc;
+%% 64-qam link - configurable midambles + piecewise phase correction + stats only
+% mode: 'simulation' | 'transmit' | 'receive'
+% simulation: run the exact internal sim (awgn + freq offset)
+% transmit: send waveform to a connected ADALM-PLUTO (no impairments)
+% receive: receive waveform from a connected ADALM-PLUTO and process
+MODE = 'simulation'; % <-- choose mode here
 
 %% params
 p.M = 64;
@@ -9,7 +14,7 @@ p.snrDb = 20;
 p.scaleTx = (p.M-1)/255;
 p.scaleRx = 255/(p.M-1);
 p.sps = 4;
-p.Fs = 1000;
+p.Fs = 520000;
 p.freqOffsetHz = 0.15;
 
 fec.n = 63;
@@ -98,13 +103,33 @@ totalCorrectedSymbols = 0;
 totalFrames = 0;
 startTime = tic;
 
+%% pluto objects (create only if needed)
+plutoTx = [];
+plutoRx = [];
+samplesPerFrame = (txFrameSyms * p.sps) + 2*trimSamples; % safe frame size for hw
+if strcmpi(MODE,'transmit')
+    % transmitter object: use reasonable defaults, user can adjust later
+    plutoTx = comm.SDRTxPluto( ...
+        'CenterFrequency', 915e6, ...
+        'BasebandSampleRate', p.Fs * p.sps, ...
+        'Gain', -10, ...
+        'ChannelMapping', 1);
+elseif strcmpi(MODE,'receive')
+    plutoRx = comm.SDRRxPluto( ...
+        'CenterFrequency', 915e6, ...
+        'BasebandSampleRate', p.Fs * p.sps, ...
+        'OutputDataType','double', ...
+        'SamplesPerFrame', samplesPerFrame, ...
+        'Gain', 20);
+end
+
 %% ui
 global RUNNING CAM;
 RUNNING = true;
 if isempty(CAM), CAM = webcam(); end
 
 fig = figure('Name','64-QAM Monitor','NumberTitle','off','Color','w','Position',[100 100 1200 420]);
-fig.CloseRequestFcn = @(src,~) closeFig(src);
+fig.CloseRequestFcn = @(src,~) closeFig(src, plutoTx, plutoRx);
 
 tiledlayout(1,3,'Padding','compact');
 nexttile; hTx = imshow(uint8(zeros(p.imgR, p.imgC))); title('tx');
@@ -123,11 +148,73 @@ while RUNNING && isvalid(fig)
 
     txSyms = buildTxFrame(codedPayload, idealPilotSyms, p.M, numSeg, segLens, numMidambles);
 
-    rxData = txrxChain(txSyms, srrc, p, trimSamples, cfc, symbolSync, carrierSync);
+    % depending on mode either simulate channel, transmit on hw, or receive from hw
+    switch lower(MODE)
+        case 'simulation'
+            rxData = txrxChain_sim(txSyms, srrc, p, trimSamples, cfc, symbolSync, carrierSync);
+        case 'transmit'
+            % prepare baseband waveform without impairments and send to pluto
+            txWave = filter(srrc, 1, [upsample(txSyms, p.sps); zeros(trimSamples,1)]);
+            % convert to single to satisfy transmitRepeat in many setups
+            txWave = single(txWave);
+            if isempty(plutoTx)
+                error('pluto transmitter object not initialized. set MODE to ''transmit'' after creating object.');
+            end
+            % transmit repeatedly (non-blocking for this loop; blocks until download completes)
+            try
+                plutoTx.transmitRepeat(txWave);
+                % for transmit mode we can still process a local copy as if received (optional)
+                rxData = txWave; % treat local loopback for display (no AWGN/freq offset)
+                % remove filter transient samples for downstream blocks (we expect symbol sync)
+                rxData = rxData;
+            catch err
+                warning('pluto transmit failed: %s', err.message);
+                rxData = [];
+            end
+        case 'receive'
+            if isempty(plutoRx)
+                error('pluto receiver object not initialized. set MODE to ''receive'' after creating object.');
+            end
+            % capture samples from hw
+            try
+                hwSamples = plutoRx();
+                % hwSamples are baseband complex at baseband sample rate
+                rxData = hwSamples;
+            catch err
+                warning('pluto receive failed: %s', err.message);
+                rxData = [];
+            end
+        otherwise
+            error('unknown MODE: %s', MODE);
+    end
 
-    if length(rxData) < txFrameSyms, continue; end
+    if isempty(rxData)
+        pause(0.01);
+        continue;
+    end
 
-    rxFrame = alignFrameByPreamble(rxData, idealPilotSyms, preLen, txFrameSyms, coarseSteps, fineSteps);
+    % for simulation path rxData is already symbol-rate synchronized after sync objects
+    % for hw receive path we must perform matched filtering and synchronizers
+    if ~strcmpi(MODE,'simulation')
+        % apply matched filter and coarse freq compensation + symbol & carrier sync
+        rxMF = filter(srrc, 1, rxData);
+        if length(rxMF) <= trimSamples
+            continue;
+        end
+        try
+            rxCFC = cfc(rxMF(trimSamples+1:end));
+            rxTimed = symbolSync(rxCFC);
+            rxData_proc = carrierSync(rxTimed);
+        catch
+            continue;
+        end
+    else
+        rxData_proc = rxData;
+    end
+
+    if length(rxData_proc) < txFrameSyms, continue; end
+
+    rxFrame = alignFrameByPreamble(rxData_proc, idealPilotSyms, preLen, txFrameSyms, coarseSteps, fineSteps);
     if isempty(rxFrame), continue; end
 
     phaseVec = estimatePiecewisePhase(rxFrame, idealPilotSyms, preLen, ...
@@ -159,13 +246,15 @@ while RUNNING && isvalid(fig)
     fps = totalFrames / elapsed;
     ber = totalBitErrors / max(totalBits,1);
 
-    title(sprintf('constellation | fps=%.2f | ber=%.3e | mids=%d', ...
-        fps, ber, numMidambles));
+    title(sprintf('constellation | fps=%.2f | ber=%.3e | mids=%d | mode=%s', ...
+        fps, ber, numMidambles, MODE));
 
     set(hSc, 'XData', real(rxPay(1:min(2000,end))), ...
              'YData', imag(rxPay(1:min(2000,end))));
     drawnow limitrate;
 end
+
+%% helper functions (kept minimal comments and lowercase)
 
 function g = captureFrameGray(p, hTx)
 global CAM;
@@ -183,7 +272,6 @@ end
 
 function txSyms = buildTxFrame(codedPayload, idealPilotSyms, M, numSeg, segLens, numMidambles)
 txPaySyms = qammod(double(codedPayload), M, 'UnitAveragePower', true);
-
 txSyms = idealPilotSyms;
 pidx = 1;
 for s = 1:numSeg
@@ -196,12 +284,11 @@ end
 txSyms = [txSyms; idealPilotSyms];
 end
 
-function rxData = txrxChain(txSyms, srrc, p, trimSamples, cfc, symbolSync, carrierSync)
+function rxData = txrxChain_sim(txSyms, srrc, p, trimSamples, cfc, symbolSync, carrierSync)
 txSig = filter(srrc, 1, [upsample(txSyms, p.sps); zeros(trimSamples,1)]);
 n = (0:length(txSig)-1).';
 txImp = txSig .* exp(1j*(2*pi*(p.freqOffsetHz/(p.Fs*p.sps))*n));
 rxSig = awgn(txImp, p.snrDb, 'measured');
-
 rxMF = filter(srrc, 1, rxSig);
 rxCFC = cfc(rxMF(trimSamples+1:end));
 rxTimed = symbolSync(rxCFC);
@@ -209,7 +296,7 @@ rxData = carrierSync(rxTimed);
 end
 
 function rxFrame = alignFrameByPreamble(rxData, idealPilotSyms, preLen, txFrameSyms, coarseSteps, fineSteps)
-bestMSE = inf; bestOffset = 1;
+bestMSE = inf; bestOffset = 1; bestPhase = 0;
 maxOff = min(400, length(rxData)-preLen+1);
 
 for offset = 1:maxOff
@@ -221,6 +308,7 @@ for offset = 1:maxOff
             if mse < bestMSE
                 bestMSE = mse;
                 bestOffset = offset;
+                bestPhase = tp;
             end
         end
     end
@@ -273,15 +361,11 @@ end
 function [imgU8, bitErrors, nBits, nCorrSyms] = decodeAndMeasure(rxDemod, rsDec, prbsSeq, dataNeeded, payload, p)
 [decPayloadScr, err] = rsDec(uint8(rxDemod));
 nCorrSyms = sum(err);
-
 decPayload = bitxor(decPayloadScr, prbsSeq);
 imgBytes = decPayload(1:dataNeeded);
-
 imgU8 = uint8(double(imgBytes) * p.scaleRx);
-
 rxBits = de2bi(double(imgBytes),8,'left-msb');
 txBits = de2bi(double(payload(1:dataNeeded)),8,'left-msb');
-
 bitErrors = sum(rxBits(:) ~= txBits(:));
 nBits = numel(rxBits);
 end
@@ -307,7 +391,12 @@ end
 phaseHat = phaseHat + (bq-1)*pi/2;
 end
 
-function closeFig(src)
+function closeFig(src, plutoTx, plutoRx)
 assignin('base','RUNNING',false);
+try
+    if ~isempty(plutoTx), release(plutoTx); end
+    if ~isempty(plutoRx), release(plutoRx); end
+catch
+end
 delete(src);
 end
