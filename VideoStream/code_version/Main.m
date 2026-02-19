@@ -20,7 +20,9 @@ preLen = length(pilotSeq);
 midLen = preLen;
 postLen = preLen;
 
-numMidambles = 3; % set to 0,1,2,3,...
+dataNeeded = p.imgR * p.imgC;
+
+numMidambles = floor(dataNeeded / 4800);
 
 dataNeeded = p.imgR * p.imgC;
 
@@ -106,7 +108,7 @@ fig.CloseRequestFcn = @(src,~) closeFig(src);
 
 tiledlayout(1,3,'Padding','compact');
 nexttile; hTx = imshow(uint8(zeros(p.imgR, p.imgC))); title('tx');
-nexttile; hRx = imshow(uint8(zeros(p.imgR, p.imgC))); title('rx (rs decoded)');
+nexttile; hRx = imshow(uint8(zeros(p.imgR, p.imgC))); title('rx');
 nexttile; hold on;
 hSc = scatter(0,0,10,'filled','MarkerFaceAlpha',0.2);
 xlim([-1.6 1.6]); ylim([-1.6 1.6]); grid on; axis square;
@@ -115,118 +117,38 @@ title('constellation');
 %% loop
 while RUNNING && isvalid(fig)
 
-    raw = snapshot(CAM);
-    g = rgb2gray(imresize(raw, [p.imgR, p.imgC]));
-    set(hTx, 'CData', g);
+    g = captureFrameGray(p, hTx);
 
-    payload = uint8(round(double(g(:)) * p.scaleTx));
-    payload = [payload; zeros(padLen,1,'uint8')];
+    [payload, codedPayload] = makePayload(g, p, dataNeeded, padLen, prbsSeq, rsEnc);
 
-    payloadScr = bitxor(payload, prbsSeq);
-    codedPayload = rsEnc(payloadScr);
-    txPaySyms = qammod(double(codedPayload), p.M, 'UnitAveragePower', true);
+    txSyms = buildTxFrame(codedPayload, idealPilotSyms, p.M, numSeg, segLens, numMidambles);
 
-    % build tx frame: pre | seg1 | mid1 | ... | segN | post
-    txSyms = idealPilotSyms;
-    pidx = 1;
-    for s = 1:numSeg
-        txSyms = [txSyms; txPaySyms(pidx:pidx+segLens(s)-1)]; %#ok<AGROW>
-        pidx = pidx + segLens(s);
-        if s <= numMidambles
-            txSyms = [txSyms; idealPilotSyms]; %#ok<AGROW>
-        end
-    end
-    txSyms = [txSyms; idealPilotSyms];
-
-    txSig = filter(srrc, 1, [upsample(txSyms, p.sps); zeros(trimSamples,1)]);
-    n = (0:length(txSig)-1).';
-    txImp = txSig .* exp(1j*(2*pi*(p.freqOffsetHz/(p.Fs*p.sps))*n));
-    rxSig = awgn(txImp, p.snrDb, 'measured');
-
-    rxMF = filter(srrc, 1, rxSig);
-    rxCFC = cfc(rxMF(trimSamples+1:end));
-    rxTimed = symbolSync(rxCFC);
-    rxData = carrierSync(rxTimed);
+    rxData = txrxChain(txSyms, srrc, p, trimSamples, cfc, symbolSync, carrierSync);
 
     if length(rxData) < txFrameSyms, continue; end
 
-    % preamble search
-    bestMSE = inf; bestOffset = 1; bestPhase = 0;
-    maxOff = min(400, length(rxData)-preLen+1);
-    for offset = 1:maxOff
-        rxPre = rxData(offset:offset+preLen-1);
-        for cp = coarseSteps
-            for fp = fineSteps
-                tp = cp + fp;
-                mse = mean(abs(rxPre*exp(1j*tp)-idealPilotSyms).^2);
-                if mse < bestMSE
-                    bestMSE = mse;
-                    bestOffset = offset;
-                    bestPhase = tp;
-                end
-            end
-        end
-    end
+    rxFrame = alignFrameByPreamble(rxData, idealPilotSyms, preLen, txFrameSyms, coarseSteps, fineSteps);
+    if isempty(rxFrame), continue; end
 
-    rxAligned = rxData(bestOffset:end);
-    if length(rxAligned) < txFrameSyms, continue; end
-    rxFrame = rxAligned(1:txFrameSyms);
-
-    % estimate phase at anchors: pre, each mid, post
-    phases = zeros(1, numMidambles + 2);
-    anchors = zeros(1, numMidambles + 2);
-
-    anchors(1) = preStart;
-    for m = 1:numMidambles
-        anchors(m+1) = midStarts(m);
-    end
-    anchors(end) = postStart;
-
-    for a = 1:numel(anchors)
-        st = anchors(a);
-        rxPil = rxFrame(st:st+preLen-1);
-        phases(a) = estPhase(rxPil, idealPilotSyms, coarseSteps, fineSteps);
-    end
-
-    % piecewise-linear phase vector across entire frame
-    phaseVec = zeros(txFrameSyms,1);
-    for a = 1:(numel(anchors)-1)
-        a0 = anchors(a);
-        a1 = anchors(a+1);
-        i0 = a0;
-        i1 = a1 - 1;
-        if i1 < i0, continue; end
-        phaseVec(i0:i1) = linspace(phases(a), phases(a+1), i1-i0+1).';
-    end
-    phaseVec(anchors(end):txFrameSyms) = linspace(phases(end-1), phases(end), txFrameSyms-anchors(end)+1).';
+    phaseVec = estimatePiecewisePhase(rxFrame, idealPilotSyms, preLen, ...
+        preStart, midStarts, postStart, numMidambles, coarseSteps, fineSteps, txFrameSyms);
 
     rxFrame = rxFrame .* exp(1j * phaseSign * phaseVec);
 
-    % extract payload segments, skipping all pilots
-    rxPay = complex([]);
-    for s = 1:numSeg
-        st = segStarts(s);
-        rxPay = [rxPay; rxFrame(st:st+segLens(s)-1)]; %#ok<AGROW>
-    end
+    rxPay = extractPayload(rxFrame, segStarts, segLens, numSeg);
 
     rxDemod = qamdemod(rxPay, p.M, 'UnitAveragePower', true);
 
     try
-        [decPayloadScr, err] = rsDec(uint8(rxDemod));
-        totalCorrectedSymbols = totalCorrectedSymbols + sum(err);
+        [imgU8, bitErrors, nBits, nCorrSyms] = decodeAndMeasure( ...
+            rxDemod, rsDec, prbsSeq, dataNeeded, payload, p);
 
-        decPayload = bitxor(decPayloadScr, prbsSeq);
-        imgBytes = decPayload(1:dataNeeded);
+        totalCorrectedSymbols = totalCorrectedSymbols + nCorrSyms;
 
-        imgU8 = uint8(double(imgBytes) * p.scaleRx);
         set(hRx, 'CData', reshape(imgU8, p.imgR, p.imgC));
 
-        rxBits = de2bi(double(imgBytes),8,'left-msb');
-        txBits = de2bi(double(payload(1:dataNeeded)),8,'left-msb');
-
-        bitErrors = sum(rxBits(:) ~= txBits(:));
         totalBitErrors = totalBitErrors + bitErrors;
-        totalBits = totalBits + numel(rxBits);
+        totalBits = totalBits + nBits;
         totalFrames = totalFrames + 1;
 
     catch
@@ -243,6 +165,125 @@ while RUNNING && isvalid(fig)
     set(hSc, 'XData', real(rxPay(1:min(2000,end))), ...
              'YData', imag(rxPay(1:min(2000,end))));
     drawnow limitrate;
+end
+
+function g = captureFrameGray(p, hTx)
+global CAM;
+raw = snapshot(CAM);
+g = rgb2gray(imresize(raw, [p.imgR, p.imgC]));
+set(hTx, 'CData', g);
+end
+
+function [payload, codedPayload] = makePayload(g, p, dataNeeded, padLen, prbsSeq, rsEnc)
+payload = uint8(round(double(g(:)) * p.scaleTx));
+payload = [payload; zeros(padLen,1,'uint8')];
+payloadScr = bitxor(payload, prbsSeq);
+codedPayload = rsEnc(payloadScr);
+end
+
+function txSyms = buildTxFrame(codedPayload, idealPilotSyms, M, numSeg, segLens, numMidambles)
+txPaySyms = qammod(double(codedPayload), M, 'UnitAveragePower', true);
+
+txSyms = idealPilotSyms;
+pidx = 1;
+for s = 1:numSeg
+    txSyms = [txSyms; txPaySyms(pidx:pidx+segLens(s)-1)]; %#ok<AGROW>
+    pidx = pidx + segLens(s);
+    if s <= numMidambles
+        txSyms = [txSyms; idealPilotSyms]; %#ok<AGROW>
+    end
+end
+txSyms = [txSyms; idealPilotSyms];
+end
+
+function rxData = txrxChain(txSyms, srrc, p, trimSamples, cfc, symbolSync, carrierSync)
+txSig = filter(srrc, 1, [upsample(txSyms, p.sps); zeros(trimSamples,1)]);
+n = (0:length(txSig)-1).';
+txImp = txSig .* exp(1j*(2*pi*(p.freqOffsetHz/(p.Fs*p.sps))*n));
+rxSig = awgn(txImp, p.snrDb, 'measured');
+
+rxMF = filter(srrc, 1, rxSig);
+rxCFC = cfc(rxMF(trimSamples+1:end));
+rxTimed = symbolSync(rxCFC);
+rxData = carrierSync(rxTimed);
+end
+
+function rxFrame = alignFrameByPreamble(rxData, idealPilotSyms, preLen, txFrameSyms, coarseSteps, fineSteps)
+bestMSE = inf; bestOffset = 1;
+maxOff = min(400, length(rxData)-preLen+1);
+
+for offset = 1:maxOff
+    rxPre = rxData(offset:offset+preLen-1);
+    for cp = coarseSteps
+        for fp = fineSteps
+            tp = cp + fp;
+            mse = mean(abs(rxPre*exp(1j*tp)-idealPilotSyms).^2);
+            if mse < bestMSE
+                bestMSE = mse;
+                bestOffset = offset;
+            end
+        end
+    end
+end
+
+rxAligned = rxData(bestOffset:end);
+if length(rxAligned) < txFrameSyms
+    rxFrame = [];
+    return;
+end
+rxFrame = rxAligned(1:txFrameSyms);
+end
+
+function phaseVec = estimatePiecewisePhase(rxFrame, idealPilotSyms, preLen, preStart, midStarts, postStart, numMidambles, coarseSteps, fineSteps, txFrameSyms)
+phases = zeros(1, numMidambles + 2);
+anchors = zeros(1, numMidambles + 2);
+
+anchors(1) = preStart;
+for m = 1:numMidambles
+    anchors(m+1) = midStarts(m);
+end
+anchors(end) = postStart;
+
+for a = 1:numel(anchors)
+    st = anchors(a);
+    rxPil = rxFrame(st:st+preLen-1);
+    phases(a) = estPhase(rxPil, idealPilotSyms, coarseSteps, fineSteps);
+end
+
+phaseVec = zeros(txFrameSyms,1);
+for a = 1:(numel(anchors)-1)
+    a0 = anchors(a);
+    a1 = anchors(a+1);
+    i0 = a0;
+    i1 = a1 - 1;
+    if i1 < i0, continue; end
+    phaseVec(i0:i1) = linspace(phases(a), phases(a+1), i1-i0+1).';
+end
+phaseVec(anchors(end):txFrameSyms) = linspace(phases(end-1), phases(end), txFrameSyms-anchors(end)+1).';
+end
+
+function rxPay = extractPayload(rxFrame, segStarts, segLens, numSeg)
+rxPay = complex([]);
+for s = 1:numSeg
+    st = segStarts(s);
+    rxPay = [rxPay; rxFrame(st:st+segLens(s)-1)]; %#ok<AGROW>
+end
+end
+
+function [imgU8, bitErrors, nBits, nCorrSyms] = decodeAndMeasure(rxDemod, rsDec, prbsSeq, dataNeeded, payload, p)
+[decPayloadScr, err] = rsDec(uint8(rxDemod));
+nCorrSyms = sum(err);
+
+decPayload = bitxor(decPayloadScr, prbsSeq);
+imgBytes = decPayload(1:dataNeeded);
+
+imgU8 = uint8(double(imgBytes) * p.scaleRx);
+
+rxBits = de2bi(double(imgBytes),8,'left-msb');
+txBits = de2bi(double(payload(1:dataNeeded)),8,'left-msb');
+
+bitErrors = sum(rxBits(:) ~= txBits(:));
+nBits = numel(rxBits);
 end
 
 function phaseHat = estPhase(rxPil, idealPil, coarseSteps, fineSteps)
