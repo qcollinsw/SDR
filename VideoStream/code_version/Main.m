@@ -254,7 +254,7 @@ while RUNNING && isvalid(fig)
     drawnow limitrate;
 end
 
-%% helper functions (kept minimal comments and lowercase)
+%% helper functions
 
 function g = captureFrameGray(p, hTx)
 global CAM;
