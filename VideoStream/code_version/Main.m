@@ -1,5 +1,5 @@
 clear; close all; clc;
-%% 64-qam link - configurable midambles + piecewise phase correction + stats only
+%% 4-qam link - configurable midambles + piecewise phase correction + stats only
 % mode: 'simulation' | 'transmit' | 'receive'
 % simulation: run the exact internal sim (awgn + freq offset)
 % transmit: send waveform to a connected ADALM-PLUTO (no impairments)
@@ -7,20 +7,28 @@ clear; close all; clc;
 MODE = 'simulation'; % <-- choose mode here
 
 %% params
-p.M = 64;
+p.M = 4;                     
 p.imgR = 120;
 p.imgC = 160;
 p.snrDb = 20;
+% scaleTx maps 0..255 image bytes into symbol indices 0..M-1
 p.scaleTx = (p.M-1)/255;
 p.scaleRx = 255/(p.M-1);
 p.sps = 4;
 p.Fs = 520000;
-p.freqOffsetHz = 100;
+p.freqOffsetHz = 40000;
 
-fec.n = 63;
-fec.k = 51;
+% NOTE: Reed-Solomon originally used (63,51) over GF(2^6) which requires
+% 6-bit symbols (M>=64). For QPSK we use no FEC (pass-through encoder)
+% If you want FEC with QPSK, we can implement bit-packing or use smaller RS.
+% For now, treat encoder/decoder as identity functions.
+fec.n = []; fec.k = [];
 
-pilotSeq = [0; 2; 61; 35]; % used for pre/mid/post
+pilotSeqShort = [0; 1; 2; 3]; % must be in 0..M-1 for M=4 (used for pre/mid/post)
+
+pilotRepeat = 1;
+pilotSeq = repmat(pilotSeqShort, pilotRepeat, 1);
+
 preLen = length(pilotSeq);
 midLen = preLen;
 postLen = preLen;
@@ -29,18 +37,18 @@ dataNeeded = p.imgR * p.imgC;
 
 numMidambles = floor(dataNeeded / 4800);
 
-dataNeeded = p.imgR * p.imgC;
+% With no FEC, totalMsgLen equals dataNeeded (no padding for RS)
+totalMsgLen = dataNeeded;
+padLen = 0;
 
-totalMsgLen = ceil(dataNeeded / fec.k) * fec.k;
-padLen = totalMsgLen - dataNeeded;
-
-codedPayloadLen = (totalMsgLen / fec.k) * fec.n;
+codedPayloadLen = totalMsgLen; % no coding expansion
 
 %% objects
 srrc = rcosdesign(0.25, 10, p.sps, 'sqrt');
 
-rsEnc = comm.RSEncoder('CodewordLength', fec.n, 'MessageLength', fec.k);
-rsDec = comm.RSDecoder('CodewordLength', fec.n, 'MessageLength', fec.k);
+% replace RS encoder/decoder with pass-thru function handles
+rsEnc = @(x) x;
+rsDec = @(y) deal(y, zeros(size(y))); % returns (decoded, errVector)
 
 cfc = comm.CoarseFrequencyCompensator('Modulation','QAM','SampleRate',p.Fs*p.sps);
 
@@ -58,11 +66,12 @@ idealPilotSyms = qammod(pilotSeq, p.M, 'UnitAveragePower', true);
 
 trimSamples = 10 * p.sps;
 
+% PRBS must be within 0..M-1 now
 prbsGen = comm.PNSequence( ...
     'Polynomial', [7 6 0], ...
     'InitialConditions', ones(1,7), ...
     'SamplesPerFrame', totalMsgLen);
-prbsSeq = uint8(prbsGen() * 63);
+prbsSeq = uint8(prbsGen() * (p.M-1));
 
 %% phase search grids
 coarseSteps = [0 45 90 135 180 225 270 315] * pi/180;
@@ -128,7 +137,7 @@ global RUNNING CAM;
 RUNNING = true;
 if isempty(CAM), CAM = webcam(); end
 
-fig = figure('Name','64-QAM Monitor','NumberTitle','off','Color','w','Position',[100 100 1200 420]);
+fig = figure('Name','4-QAM Monitor','NumberTitle','off','Color','w','Position',[100 100 1200 420]);
 fig.CloseRequestFcn = @(src,~) closeFig(src, plutoTx, plutoRx);
 
 tiledlayout(1,3,'Padding','compact');
@@ -264,9 +273,11 @@ set(hTx, 'CData', g);
 end
 
 function [payload, codedPayload] = makePayload(g, p, dataNeeded, padLen, prbsSeq, rsEnc)
+% payload: 0..255 mapped to 0..M-1 indices using p.scaleTx
 payload = uint8(round(double(g(:)) * p.scaleTx));
 payload = [payload; zeros(padLen,1,'uint8')];
 payloadScr = bitxor(payload, prbsSeq);
+% pass-through encoder for QPSK
 codedPayload = rsEnc(payloadScr);
 end
 
@@ -359,8 +370,9 @@ end
 end
 
 function [imgU8, bitErrors, nBits, nCorrSyms] = decodeAndMeasure(rxDemod, rsDec, prbsSeq, dataNeeded, payload, p)
+% For QPSK with pass-through RS, rsDec simply returns the input and zero error vector
 [decPayloadScr, err] = rsDec(uint8(rxDemod));
-nCorrSyms = sum(err);
+nCorrSyms = sum(err); % will be zero for pass-through
 decPayload = bitxor(decPayloadScr, prbsSeq);
 imgBytes = decPayload(1:dataNeeded);
 imgU8 = uint8(double(imgBytes) * p.scaleRx);
