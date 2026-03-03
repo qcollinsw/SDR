@@ -13,6 +13,6 @@ function rxData = sdr_tx_only(txSyms, srrc, p, trimSamples, plutoTx)
        fprintf('dbg: tx step | samples=%d | rms=%.4g | underrun=%d\n', ...
            length(txWave), rms(double(txWave)), underrun);
    catch err
-       warning('pluto transmit failed: %s', err.message);
+       warning('pluto transmit failed: %s', e.message);
    end
 end
