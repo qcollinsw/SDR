@@ -1,6 +1,10 @@
 % File: sdr_init.m
 function [state, io, ui] = sdr_init(p)
 
+if abs(log2(p.M) - round(log2(p.M))) > 0
+    error('M must be a power of two.');
+end
+
 state = struct();
 io = struct();
 ui = struct();
@@ -38,7 +42,13 @@ state.carrierSync = comm.CarrierSynchronizer( ...
     'NormalizedLoopBandwidth', 5e-4, ...
     'DampingFactor', 1);
 
-state.idealPilotSyms = qammod(state.pilotSeq, p.M, 'UnitAveragePower', true);
+state.pilotSeq = uint8(mod(double(state.pilotSeq), p.M));
+
+if strcmpi(p.modType,'psk') && p.M <= 8
+    state.idealPilotSyms = pskmod(double(state.pilotSeq), p.M, 0);
+else
+    state.idealPilotSyms = qammod(double(state.pilotSeq), p.M, 'UnitAveragePower', true);
+end
 
 state.trimSamples = 10 * p.sps;
 

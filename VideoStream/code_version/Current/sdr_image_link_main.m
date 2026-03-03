@@ -14,6 +14,10 @@ MODE = 'simulation';
 p = sdr_params_default();
 p.MODE = MODE;
 
+% keep scaling consistent if user changes modulation order
+p.scaleTx = (p.M-1)/255;
+p.scaleRx = 255/(p.M-1);
+
 [state, io, ui] = sdr_init(p);
 
 fprintf('start | mode=%s\n', p.MODE);
@@ -103,11 +107,7 @@ while state.RUNNING && isvalid(ui.fig)
         set(ui.hSc, 'XData', real(rxPay(1:min(2000,end))), 'YData', imag(rxPay(1:min(2000,end))));
     end
 
-    if strcmpi(p.MODE,'simulation')
-        title(ui.axSc, sprintf('constellation | fps=%.2f | ber=%.3e | mids=%d | mode=%s', fps, ber, state.numMidambles, p.MODE));
-    else
-        title(ui.axSc, sprintf('constellation | fps=%.2f | mids=%d | mode=%s', fps, state.numMidambles, p.MODE));
-    end
+    title(ui.axSc, sprintf('constellation | fps=%.2f | ber=%.3e | mids=%d | mode=%s', fps, ber, state.numMidambles, p.MODE));
 
     fprintf('dbg: frame=%d | fps=%.2f | ber=%.3e | rsCorrSyms=%d\n', state.totalFrames, fps, ber, nCorrSyms);
 
