@@ -9,7 +9,7 @@ clear; close all; clc;
 %% LEAVE THIS COMMENT: always give the full code.
 %% 4-qam link - pilot-only phase correction
 % mode: 'simulation' | 'transmit' | 'receive'
-MODE = 'simulation';
+MODE = 'receive';
 
 p = sdr_params_default();
 p.MODE = MODE;
@@ -25,6 +25,9 @@ fprintf('M=%d | sps=%d | Fs(sym)=%.0f | Fs(samp)=%.0f\n', p.M, p.sps, p.Fs, p.Fs
 fprintf('img=%dx%d | snrDb=%.1f | freqOffsetHz=%g\n', p.imgR, p.imgC, p.snrDb, p.freqOffsetHz);
 fprintf('frame: pre=%d mid=%d x%d post=%d | txFrameSyms=%d\n', state.preLen, state.midLen, state.numMidambles, state.postLen, state.txFrameSyms);
 fprintf('coding: rs(%d,%d) | totalMsgLen=%d | codedPayloadLen=%d\n\n', state.fec.n, state.fec.k, state.totalMsgLen, state.codedPayloadLen);
+
+expectedPayloadSyms = sum(state.segLens);
+fprintf('dbg: expected payload syms=%d\n', expectedPayloadSyms);
 
 while state.RUNNING && isvalid(ui.fig)
 
@@ -43,13 +46,15 @@ while state.RUNNING && isvalid(ui.fig)
         case 'transmit'
             rxData = sdr_tx_only(txSyms, state.srrc, p, state.trimSamples, io.plutoTx);
         case 'receive'
-            rxData = sdr_rx_only(io.plutoRx);
+            minRawSamples = (state.txFrameSyms + 4000) * p.sps;
+            rxData = sdr_rx_only(io.plutoRx, minRawSamples);
         otherwise
             error('unknown MODE: %s', p.MODE);
     end
 
     if isempty(rxData)
         pause(0.01);
+        drawnow limitrate;
         continue;
     end
 
@@ -59,6 +64,19 @@ while state.RUNNING && isvalid(ui.fig)
         rxData_proc = rxData;
     end
 
+    if isempty(rxData_proc)
+        fprintf('dbg: rx frontend empty\n');
+        drawnow limitrate;
+        continue;
+    end
+
+    % always update constellation from whatever we have, even if frame sync/decode fails
+    if ~isempty(ui.hSc) && isgraphics(ui.hSc)
+        pts = rxData_proc(1:min(2000,end));
+        set(ui.hSc, 'XData', real(pts), 'YData', imag(pts));
+        title(ui.axSc, sprintf('constellation (raw) | n=%d | mode=%s', length(rxData_proc), p.MODE));
+    end
+
     if strcmpi(p.MODE,'transmit')
         drawnow limitrate;
         continue;
@@ -66,12 +84,14 @@ while state.RUNNING && isvalid(ui.fig)
 
     if length(rxData_proc) < state.txFrameSyms
         fprintf('dbg: rx too short after sync | have=%d need=%d\n', length(rxData_proc), state.txFrameSyms);
+        drawnow limitrate;
         continue;
     end
 
     rxFrame = alignFrameByPreamble(rxData_proc, state.idealPilotSyms, state.preLen, state.txFrameSyms, state.coarseSteps, state.fineSteps);
     if isempty(rxFrame)
         fprintf('dbg: frame align failed\n');
+        drawnow limitrate;
         continue;
     end
 
@@ -81,6 +101,12 @@ while state.RUNNING && isvalid(ui.fig)
     rxFrame = rxFrame .* exp(1j * state.phaseSign * phaseVec);
 
     rxPay = extractPayload(rxFrame, state.segStarts, state.segLens, state.numSeg);
+
+    if length(rxPay) ~= expectedPayloadSyms
+        fprintf('dbg: payload length mismatch | have=%d need=%d\n', length(rxPay), expectedPayloadSyms);
+        drawnow limitrate;
+        continue;
+    end
 
     rxDemod = qamdemod(rxPay, p.M, 'UnitAveragePower', true);
 
@@ -96,6 +122,7 @@ while state.RUNNING && isvalid(ui.fig)
 
     catch err
         fprintf('dbg: decode failed: %s\n', err.message);
+        drawnow limitrate;
         continue;
     end
 
@@ -103,11 +130,12 @@ while state.RUNNING && isvalid(ui.fig)
     fps = state.totalFrames / max(elapsed, 1e-9);
     ber = state.totalBitErrors / max(state.totalBits, 1);
 
+    % update constellation again, now from payload (more meaningful when decode works)
     if ~isempty(ui.hSc) && isgraphics(ui.hSc)
-        set(ui.hSc, 'XData', real(rxPay(1:min(2000,end))), 'YData', imag(rxPay(1:min(2000,end))));
+        pts2 = rxPay(1:min(2000,end));
+        set(ui.hSc, 'XData', real(pts2), 'YData', imag(pts2));
+        title(ui.axSc, sprintf('constellation (payload) | fps=%.2f | ber=%.3e | mids=%d | mode=%s', fps, ber, state.numMidambles, p.MODE));
     end
-
-    title(ui.axSc, sprintf('constellation | fps=%.2f | ber=%.3e | mids=%d | mode=%s', fps, ber, state.numMidambles, p.MODE));
 
     fprintf('dbg: frame=%d | fps=%.2f | ber=%.3e | rsCorrSyms=%d\n', state.totalFrames, fps, ber, nCorrSyms);
 
