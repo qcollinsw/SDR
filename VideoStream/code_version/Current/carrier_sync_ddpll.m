@@ -42,19 +42,19 @@ if ischar(arg) || isstring(arg)
            error('unknown command to carrier_sync_ddpll: %s', cmd);
    end
 end
-if ~inited
-   bl = 0.02;
-   zeta = 0.707;
-   m = 4;
-   modtype = "qam";
-   theta = bl / (zeta + 1/(4*zeta));
-   d = 1 + 2*zeta*theta + theta^2;
-   alpha = (4*zeta*theta) / d;
-   beta  = (4*theta^2) / d;
-   const = qammod((0:m-1).', m, 'UnitAveragePower', true);
-   phase_est = 0;
-   freq_est = 0;
-   inited = true;
+if isempty(inited) || ~inited || isempty(const)
+    bl = 0.02;
+    zeta = 0.707;
+    m = 4;
+    modtype = "qam";
+    theta = bl / (zeta + 1/(4*zeta));
+    d = 1 + 2*zeta*theta + theta^2;
+    alpha = (4*zeta*theta) / d;
+    beta  = (4*theta^2) / d;
+    const = qammod((0:m-1).', m, 'UnitAveragePower', true);
+    phase_est = 0;
+    freq_est = 0;
+    inited = true;
 end
 rx_sym = arg(:);
 N = length(rx_sym);
@@ -65,7 +65,7 @@ for k = 1:N
    d_hat = const(ii);
    e = angle(y * conj(d_hat));
    freq_est = freq_est + beta * e;
-   phase_est = phase_est + freq_est + alpha * e;
+   phase_est = phase_est(1) + freq_est(1) + alpha(1) * e(1);
    out(k) = y;
 end
 end
