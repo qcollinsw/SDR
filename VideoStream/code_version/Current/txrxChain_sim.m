@@ -8,4 +8,5 @@ rxMF = filter(srrc, 1, rxSig);
 rxCFC = cfc(rxMF(trimSamples+1:end));
 rxTimed = symbolSync(rxCFC);
 rxData = carrierSync(rxTimed);
+
 end

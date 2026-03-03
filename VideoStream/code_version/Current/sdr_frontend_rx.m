@@ -12,5 +12,6 @@ try
     rxData_proc = carrierSync(rxTimed);
 catch
     rxData_proc = [];
+    fprintf("Error processing received data.");
 end
 end
