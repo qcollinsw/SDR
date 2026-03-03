@@ -9,8 +9,11 @@ state = struct();
 io = struct();
 ui = struct();
 
-state.fec.n = 63;
-state.fec.k = 51;
+
+rs_m = log2(p.M);  
+state.fec.n = 2^rs_m - 1;  
+state.fec.k = state.fec.n - 12;
+
 
 state.pilotSeq = [0; 2; 61; 35];
 state.preLen = length(state.pilotSeq);
@@ -57,7 +60,7 @@ prbsGen = comm.PNSequence( ...
     'Polynomial', [7 6 0], ...
     'InitialConditions', ones(1,7), ...
     'SamplesPerFrame', state.totalMsgLen);
-state.prbsSeq = uint8(prbsGen() * 63);
+state.prbsSeq = uint8(prbsGen() * (p.M - 1));
 
 state.coarseSteps = [0 45 90 135 180 225 270 315] * pi/180;
 state.fineSteps = linspace(-pi/8, pi/8, 24);

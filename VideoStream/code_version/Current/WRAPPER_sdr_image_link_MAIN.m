@@ -27,12 +27,23 @@ fprintf('M=%d | sps=%d | Fs(sym)=%.0f | Fs(samp)=%.0f\n', p.M, p.sps, p.Fs, p.Fs
 fprintf('img=%dx%d | snrDb=%.1f | freqOffsetHz=%g\n', p.imgR, p.imgC, p.snrDb, p.freqOffsetHz);
 fprintf('frame: pre=%d mid=%d x%d post=%d | txFrameSyms=%d\n', state.preLen, state.midLen, state.numMidambles, state.postLen, state.txFrameSyms);
 fprintf('coding: rs(%d,%d) | totalMsgLen=%d | codedPayloadLen=%d\n\n', state.fec.n, state.fec.k, state.totalMsgLen, state.codedPayloadLen);
+m_bits = log2(p.M);
+fprintf('dbg-config: scaleTx=%.6f | scaleRx=%.6f\n', m_bits, p.scaleTx, p.scaleRx);
+fprintf('dbg-config: rs field=GF(2^%d) | rs n=%d | rs k=%d  | max_qam_idx=%d\n', ...
+     state.fec.n, state.fec.k, p.M - 1);
+
+
 
 while state.RUNNING && isvalid(ui.fig)
 
     if strcmpi(p.MODE,'simulation') || strcmpi(p.MODE,'transmit')
         g = captureFrameGray(p, ui.hTx);
         [payload, codedPayload] = makePayload(g, p, state.dataNeeded, state.padLen, state.prbsSeq, state.rsEnc);
+        fprintf('dbg-payload-tx: min=%d max=%d unique=%d | coded min=%d max=%d\n', ...
+        min(payload), max(payload), numel(unique(payload)), min(codedPayload), max(codedPayload));
+        if max(codedPayload) >= p.M
+            fprintf('*** WARNING: coded symbol %d exceeds M-1=%d, will wrap in qammod ***\n', max(codedPayload), p.M-1);
+        end
         txSyms = buildTxFrame(codedPayload, state.idealPilotSyms, p.M, state.numSeg, state.segLens, state.numMidambles);
     else
         txSyms = [];
@@ -97,9 +108,13 @@ while state.RUNNING && isvalid(ui.fig)
 
     rxDemod = qamdemod(rxPay, p.M, 'UnitAveragePower', true);
     fprintf('dbg-demod: len=%d | mod63=%d\n', length(rxDemod), mod(length(rxDemod), 63));
+    fprintf('dbg-demod-rx: min=%d max=%d unique=%d\n', min(rxDemod), max(rxDemod), numel(unique(rxDemod)));
+
 
     try
         [imgU8, bitErrors, nBits, nCorrSyms] = decodeAndMeasure(rxDemod, state.rsDec, state.prbsSeq, state.dataNeeded, payload, p);
+        fprintf('dbg-pre-decode: rxDemod len=%d | mod(len,fec.n)=%d | mod(len,fec.k)=%d\n', ...
+        length(rxDemod), mod(length(rxDemod), state.fec.n), mod(length(rxDemod), state.fec.k));
 
         state.totalCorrectedSymbols = state.totalCorrectedSymbols + nCorrSyms;
         set(ui.hRx, 'CData', reshape(imgU8, p.imgR, p.imgC));
