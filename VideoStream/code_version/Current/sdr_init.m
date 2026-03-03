@@ -1,30 +1,31 @@
 % File: sdr_init.m
 function [state, io, ui] = sdr_init(p)
+
 if abs(log2(p.M) - round(log2(p.M))) > 0
     error('M must be a power of two.');
 end
+
 state = struct();
 io = struct();
 ui = struct();
 
-rs_m = log2(p.M);
-state.fec.n = 2^rs_m - 1;
+
+rs_m = log2(p.M);  
+state.fec.n = 2^rs_m - 1;  
 state.fec.k = state.fec.n - 12;
 
-% pilot sequence — 64 symbols from a pn sequence, mapped to [0, M-1]
-state.preLen = 64;
-pnPilot = comm.PNSequence('Polynomial', [6 1 0], ...
-    'InitialConditions', [1 0 0 0 0 1], ...
-    'SamplesPerFrame', state.preLen);
-state.pilotSeq = uint8(mod(pnPilot(), p.M));
 
+state.pilotSeq = [0; 2; 61; 35];
+state.preLen = length(state.pilotSeq);
 state.midLen = state.preLen;
 state.postLen = state.preLen;
 
 state.dataNeeded = p.imgR * p.imgC;
 state.numMidambles = floor(state.dataNeeded / 4800);
+
 state.totalMsgLen = ceil(state.dataNeeded / state.fec.k) * state.fec.k;
 state.padLen = state.totalMsgLen - state.dataNeeded;
+
 state.codedPayloadLen = (state.totalMsgLen / state.fec.k) * state.fec.n;
 
 state.srrc = rcosdesign(0.25, 10, p.sps, 'sqrt');
@@ -45,7 +46,8 @@ state.carrierSync = comm.CarrierSynchronizer( ...
     'NormalizedLoopBandwidth', 0.001, ...
     'DampingFactor', 1);
 
-% modulate pilot sequence
+state.pilotSeq = uint8(mod(double(state.pilotSeq), p.M));
+
 if strcmpi(p.modType,'psk') && p.M <= 8
     state.idealPilotSyms = pskmod(double(state.pilotSeq), p.M, 0);
 else
@@ -60,25 +62,24 @@ prbsGen = comm.PNSequence( ...
     'SamplesPerFrame', state.totalMsgLen);
 state.prbsSeq = uint8(prbsGen() * (p.M - 1));
 
-% phase search params (kept for compatibility but not used by new align)
-state.coarseSteps = (0:45:315) * pi/180;
+state.coarseSteps = [0 45 90 135 180 225 270 315] * pi/180;
 state.fineSteps = linspace(-pi/8, pi/8, 24);
 state.phaseSign = +1;
 
-% segment layout
 state.numSeg = state.numMidambles + 1;
 baseSeg = floor(state.codedPayloadLen / state.numSeg);
 state.segLens = baseSeg * ones(1, state.numSeg);
 state.segLens(end) = state.codedPayloadLen - sum(state.segLens(1:end-1));
 
-state.txFrameSyms = state.preLen + state.codedPayloadLen + ...
-    state.numMidambles*state.midLen + state.postLen;
+state.txFrameSyms = state.preLen + state.codedPayloadLen + state.numMidambles*state.midLen + state.postLen;
 
 state.segStarts = zeros(1, state.numSeg);
 state.midStarts = zeros(1, state.numMidambles);
+
 idx = 1;
 state.preStart = idx;
 idx = idx + state.preLen;
+
 for s = 1:state.numSeg
     state.segStarts(s) = idx;
     idx = idx + state.segLens(s);
@@ -87,6 +88,7 @@ for s = 1:state.numSeg
         idx = idx + state.midLen;
     end
 end
+
 state.postStart = idx;
 
 state.totalBits = 0;
@@ -97,7 +99,9 @@ state.startTime = tic;
 
 io.plutoTx = [];
 io.plutoRx = [];
+
 samplesPerFrame = (state.txFrameSyms * p.sps) + 2*state.trimSamples;
+
 
 if strcmpi(p.MODE,'transmit')
     io.plutoTx = comm.SDRTxPluto( ...
@@ -117,6 +121,7 @@ end
 global RUNNING CAM;
 RUNNING = true;
 state.RUNNING = true;
+
 if strcmpi(p.MODE,'simulation') || strcmpi(p.MODE,'transmit')
     if isempty(CAM)
         try
