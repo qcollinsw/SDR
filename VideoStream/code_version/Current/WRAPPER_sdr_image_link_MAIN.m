@@ -9,10 +9,12 @@ clear; close all; clc;
 %% LEAVE THIS COMMENT: always give the full code.
 %% 4-qam link - pilot-only phase correction
 % mode: 'simulation' | 'transmit' | 'receive'
-MODE = 'simulation';
+MODE = 'receive';
+M = 16;
 
 p = sdr_params_default();
 p.MODE = MODE;
+p.M = M;
 
 % keep scaling consistent if user changes modulation order
 p.scaleTx = (p.M-1)/255;
@@ -69,20 +71,32 @@ while state.RUNNING && isvalid(ui.fig)
         continue;
     end
 
+    fprintf('dbg-pre-align: rxLen=%d | need=%d | pwr=%.4g\n', ...
+    length(rxData_proc), state.txFrameSyms, mean(abs(rxData_proc).^2));
+
+    % check if preamble is even visible
+    xc = abs(xcorr(rxData_proc(1:min(5000,end)), state.idealPilotSyms));
+    fprintf('dbg-pre-align: xcPeak=%.4f | xcMedian=%.4f | ratio=%.1f\n', ...
+        max(xc), median(xc), max(xc)/median(xc));
+
     rxFrame = alignFrameByPreamble(rxData_proc, state.idealPilotSyms, state.preLen, state.txFrameSyms, state.coarseSteps, state.fineSteps);
     if isempty(rxFrame)
         fprintf('dbg: frame align failed\n');
         continue;
     end
 
-    phaseVec = estimatePiecewisePhase(rxFrame, state.idealPilotSyms, state.preLen, ...
-        state.preStart, state.midStarts, state.postStart, state.numMidambles, state.coarseSteps, state.fineSteps, state.txFrameSyms);
-
-    rxFrame = rxFrame .* exp(1j * state.phaseSign * phaseVec);
-
     rxPay = extractPayload(rxFrame, state.segStarts, state.segLens, state.numSeg);
+    fprintf('dbg-payload: len=%d | expect=%d\n', length(rxPay), state.codedPayloadLen);
+
+
+
+    %phaseVec = estimatePiecewisePhase(rxFrame, state.idealPilotSyms, state.preLen, ...
+    %    state.preStart, state.midStarts, state.postStart, state.numMidambles, state.coarseSteps, state.fineSteps, state.txFrameSyms);
+    %rxFrame = rxFrame .* exp(1j * state.phaseSign * phaseVec);
+    %rxPay = extractPayload(rxFrame, state.segStarts, state.segLens, state.numSeg);
 
     rxDemod = qamdemod(rxPay, p.M, 'UnitAveragePower', true);
+    fprintf('dbg-demod: len=%d | mod63=%d\n', length(rxDemod), mod(length(rxDemod), 63));
 
     try
         [imgU8, bitErrors, nBits, nCorrSyms] = decodeAndMeasure(rxDemod, state.rsDec, state.prbsSeq, state.dataNeeded, payload, p);
@@ -95,7 +109,7 @@ while state.RUNNING && isvalid(ui.fig)
         state.totalFrames = state.totalFrames + 1;
 
     catch err
-        fprintf('dbg: decode failed: %s\n', err.message);
+        fprintf('dbg-decode: %s at line %d | func=%s\n', err.message, err.stack(1).line, err.stack(1).name);
         continue;
     end
 

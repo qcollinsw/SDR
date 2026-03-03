@@ -1,7 +1,7 @@
 % File: alignFrameByPreamble.m
 function rxFrame = alignFrameByPreamble(rxData, idealPilotSyms, preLen, txFrameSyms, coarseSteps, fineSteps)
 bestMSE = inf; bestOffset = 1;
-maxOff = min(400, length(rxData)-preLen+1);
+maxOff = length(rxData) - txFrameSyms + 1;
 
 for offset = 1:maxOff
     rxPre = rxData(offset:offset+preLen-1);
@@ -23,4 +23,8 @@ if length(rxAligned) < txFrameSyms
     return;
 end
 rxFrame = rxAligned(1:txFrameSyms);
+
+fprintf('dbg-align: frameLen=%d\n', length(rxFrame));
+
+
 end

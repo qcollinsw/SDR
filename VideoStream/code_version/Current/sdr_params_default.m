@@ -4,17 +4,17 @@ p = struct();
 
 p.MODE = 'simulation';
 
-p.M = 64;
+p.M = 16;
 p.imgR = 120;
 p.imgC = 160;
 
 p.snrDb = 20;
 
 p.sps = 4;
-p.Fs = 520000;
+p.Fs = 100000;
 p.freqOffsetHz = 100;
 
-p.centerFreq = 915e6;
+p.centerFreq = 2.45e9;
 p.txGain = -10;
 p.rxGain = 20;
 
