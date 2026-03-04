@@ -9,7 +9,7 @@ clear; close all; clc;
 %% LEAVE THIS COMMENT: always give the full code.
 %% 4-qam link - pilot-only phase correction
 % mode: 'simulation' | 'transmit' | 'receive'
-MODE = 'receive';
+MODE = 'transmit';
 M = 16;
 
 p = sdr_params_default();
@@ -35,7 +35,7 @@ fprintf('dbg-config: rs field=GF(2^%d) | rs n=%d | rs k=%d  | max_qam_idx=%d\n',
 
 
 while state.RUNNING && isvalid(ui.fig)
-
+%% generate message
     if strcmpi(p.MODE,'simulation') || strcmpi(p.MODE,'transmit')
         g = captureFrameGray(p, ui.hTx);
         [payload, codedPayload] = makePayload(g, p, state.dataNeeded, state.padLen, state.prbsSeq, state.rsEnc);
@@ -49,7 +49,7 @@ while state.RUNNING && isvalid(ui.fig)
         txSyms = [];
         payload = [];
     end
-
+%% transmit and receive
     switch lower(p.MODE)
         case 'simulation'
             rxData = txrxChain_sim(txSyms, state.srrc, p, state.trimSamples, state.cfc, state.symbolSync, state.carrierSync);
@@ -85,8 +85,16 @@ while state.RUNNING && isvalid(ui.fig)
     fprintf('dbg-pre-align: rxLen=%d | need=%d | pwr=%.4g\n', ...
     length(rxData_proc), state.txFrameSyms, mean(abs(rxData_proc).^2));
 
+
+%% barker code and frame sync
     % check if preamble is even visible
     xc = abs(xcorr(rxData_proc(1:min(5000,end)), state.idealPilotSyms));
+
+    [xcPeak, peakIdx] = max(xc);
+    xcSorted = sort(xc, 'descend');
+    fprintf('dbg-sync: peak=%.3f | 2nd=%.3f | ratio=%.2f | offset=%d\n', ...
+        xcPeak, xcSorted(2), xcPeak/xcSorted(2), offset);
+
     fprintf('dbg-pre-align: xcPeak=%.4f | xcMedian=%.4f | ratio=%.1f\n', ...
         max(xc), median(xc), max(xc)/median(xc));
 
@@ -96,20 +104,21 @@ while state.RUNNING && isvalid(ui.fig)
         continue;
     end
 
+    pilotCorr = abs(mean(rxFrame(1:state.preLen) .* conj(state.idealPilotSyms)));
+    fprintf('dbg-align-quality: pilotCorr=%.4f | preLen=%d\n', pilotCorr, state.preLen);
+
     rxPay = extractPayload(rxFrame, state.segStarts, state.segLens, state.numSeg);
     fprintf('dbg-payload: len=%d | expect=%d\n', length(rxPay), state.codedPayloadLen);
+    phaseVec = estimatePiecewisePhase(rxFrame, state.idealPilotSyms, state.preLen, ...
+        state.preStart, state.midStarts, state.postStart, state.numMidambles, state.coarseSteps, state.fineSteps, state.txFrameSyms);
+    rxFrame = rxFrame .* exp(1j * state.phaseSign * phaseVec);
+    rxPay = extractPayload(rxFrame, state.segStarts, state.segLens, state.numSeg);
 
 
-
-    %phaseVec = estimatePiecewisePhase(rxFrame, state.idealPilotSyms, state.preLen, ...
-    %    state.preStart, state.midStarts, state.postStart, state.numMidambles, state.coarseSteps, state.fineSteps, state.txFrameSyms);
-    %rxFrame = rxFrame .* exp(1j * state.phaseSign * phaseVec);
-    %rxPay = extractPayload(rxFrame, state.segStarts, state.segLens, state.numSeg);
-
+%% demod and decode
     rxDemod = qamdemod(rxPay, p.M, 'UnitAveragePower', true);
     fprintf('dbg-demod: len=%d | mod63=%d\n', length(rxDemod), mod(length(rxDemod), 63));
     fprintf('dbg-demod-rx: min=%d max=%d unique=%d\n', min(rxDemod), max(rxDemod), numel(unique(rxDemod)));
-
 
     try
         [imgU8, bitErrors, nBits, nCorrSyms] = decodeAndMeasure(rxDemod, state.rsDec, state.prbsSeq, state.dataNeeded, payload, p);

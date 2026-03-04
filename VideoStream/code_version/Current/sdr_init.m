@@ -15,8 +15,15 @@ state.fec.n = 2^rs_m - 1;
 state.fec.k = state.fec.n - 12;
 
 
-state.pilotSeq = [0; 2; 61; 35];
-state.preLen = length(state.pilotSeq);
+% state.pilotSeq = [0; 2; 61; 35];
+% state.preLen = length(state.pilotSeq);
+% state.midLen = state.preLen;
+% state.postLen = state.preLen;
+
+% replace the 4-symbol pilotSeq with a proper preamble
+pnGen = comm.PNSequence('Polynomial', [7 6 0], 'InitialConditions', ones(1,7), 'SamplesPerFrame', 127);
+state.pilotSeq = uint8(mod(double(pnGen()), p.M));
+state.preLen = length(state.pilotSeq);  % 127 symbols
 state.midLen = state.preLen;
 state.postLen = state.preLen;
 
