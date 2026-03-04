@@ -9,21 +9,15 @@ state = struct();
 io = struct();
 ui = struct();
 
-
-rs_m = log2(p.M);  
-state.fec.n = 2^rs_m - 1;  
+rs_m = log2(p.M);
+state.fec.n = 2^rs_m - 1;
 state.fec.k = state.fec.n - 12;
 
-
-% state.pilotSeq = [0; 2; 61; 35];
-% state.preLen = length(state.pilotSeq);
-% state.midLen = state.preLen;
-% state.postLen = state.preLen;
-
-% replace the 4-symbol pilotSeq with a proper preamble
-pnGen = comm.PNSequence('Polynomial', [7 6 0], 'InitialConditions', ones(1,7), 'SamplesPerFrame', 127);
+pnGen = comm.PNSequence('Polynomial', [7 6 0], ...
+    'InitialConditions', ones(1,7), ...
+    'SamplesPerFrame', 127);
 state.pilotSeq = uint8(mod(double(pnGen()), p.M));
-state.preLen = length(state.pilotSeq);  % 127 symbols
+state.preLen = length(state.pilotSeq);
 state.midLen = state.preLen;
 state.postLen = state.preLen;
 
@@ -40,7 +34,8 @@ state.srrc = rcosdesign(0.25, 10, p.sps, 'sqrt');
 state.rsEnc = comm.RSEncoder('CodewordLength', state.fec.n, 'MessageLength', state.fec.k);
 state.rsDec = comm.RSDecoder('CodewordLength', state.fec.n, 'MessageLength', state.fec.k);
 
-state.cfc = comm.CoarseFrequencyCompensator('Modulation','QAM','SampleRate',p.Fs*p.sps, ...
+state.cfc = comm.CoarseFrequencyCompensator('Modulation','QAM', ...
+    'SampleRate', p.Fs*p.sps, ...
     'FrequencyResolution', 1);
 
 state.symbolSync = comm.SymbolSynchronizer( ...
@@ -107,9 +102,14 @@ state.startTime = tic;
 io.plutoTx = [];
 io.plutoRx = [];
 
-%samplesPerFrame = (state.txFrameSyms * p.sps) + 2*state.trimSamples;
-samplesPerFrame = (state.txFrameSyms * p.sps) + 2*state.trimSamples + 2000*p.sps;
+% warmup/discard controls for rx streaming
+% you must discard these in your receive loop after calling io.plutoRx()
+state.rxWarmupFrames = 8;                 % throw away the first n rx frames after start
+state.rxPrerollSamples = 200000;          % throw away this many samples at the front of each capture window
 
+% size capture to include preroll + frame + trim on both sides
+samplesPerFrameCore = ((state.txFrameSyms * p.sps) + 2*state.trimSamples);
+samplesPerFrame = samplesPerFrameCore + state.rxPrerollSamples;
 
 if strcmpi(p.MODE,'transmit')
     io.plutoTx = comm.SDRTxPluto( ...
@@ -117,13 +117,19 @@ if strcmpi(p.MODE,'transmit')
         'BasebandSampleRate', p.Fs*p.sps, ...
         'Gain', p.txGain, ...
         'ChannelMapping', 1);
+
 elseif strcmpi(p.MODE,'receive')
+    % critical: disable agc and set a fixed gain
+    rxGain = -10;
+    if isfield(p,'rxGain'), rxGain = p.rxGain; end
+
     io.plutoRx = comm.SDRRxPluto( ...
         'CenterFrequency', p.centerFreq, ...
         'BasebandSampleRate', p.Fs*p.sps, ...
         'OutputDataType','double', ...
         'SamplesPerFrame', samplesPerFrame, ...
-        'GainSource', 'AGC Slow Attack');
+        'GainSource', 'Manual', ...
+        'Gain', rxGain);
 end
 
 global RUNNING CAM;
