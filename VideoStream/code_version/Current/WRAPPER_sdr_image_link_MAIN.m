@@ -101,20 +101,39 @@ while state.RUNNING && isvalid(ui.fig)
     fprintf('dbg-pre-align: xcPeak=%.4f | xcMedian=%.4f | ratio=%.1f\n', ...
         max(xc), median(xc), max(xc)/median(xc));
 
-    rxFrame = alignFrameByPreamble(rxData_proc, state.idealPilotSyms, state.preLen, state.txFrameSyms, state.coarseSteps, state.fineSteps);
+    rxFrame = alignFrameByPreamble(rxData_proc, state.idealPilotSyms, ...
+        state.preLen, state.txFrameSyms, state.coarseSteps, state.fineSteps);
     if isempty(rxFrame)
         fprintf('dbg: frame align failed\n');
         continue;
     end
-
-    pilotCorr = abs(mean(rxFrame(1:state.preLen) .* conj(state.idealPilotSyms)));
-    fprintf('dbg-align-quality: pilotCorr=%.4f | preLen=%d\n', pilotCorr, state.preLen);
-
-    rxPay = extractPayload(rxFrame, state.segStarts, state.segLens, state.numSeg);
-    fprintf('dbg-payload: len=%d | expect=%d\n', length(rxPay), state.codedPayloadLen);
-    phaseVec = estimatePiecewisePhase(rxFrame, state.idealPilotSyms, state.preLen, ...
-        state.preStart, state.midStarts, state.postStart, state.numMidambles, state.coarseSteps, state.fineSteps, state.txFrameSyms);
-    rxFrame = rxFrame .* exp(1j * state.phaseSign * phaseVec);
+    
+    % fix rotation ambiguity
+    pre = rxFrame(1:state.preLen);
+    rawPhase = angle(pre(:)' * state.idealPilotSyms(:));
+    snapPhase = round(rawPhase / (pi/2)) * (pi/2);
+    rxFrame = rxFrame .* exp(-1j * snapPhase);
+    
+    % check midamble locations
+    for m = 1:min(3, state.numMidambles)
+        midSeg = rxFrame(state.midStarts(m):state.midStarts(m)+state.preLen-1);
+        midDemod = qamdemod(midSeg, p.M, 'UnitAveragePower', true);
+        midMatch = sum(midDemod == double(state.pilotSeq));
+        fprintf('dbg-mid%d: start=%d | match=%d/%d\n', m, state.midStarts(m), midMatch, state.preLen);
+    end
+    
+    % verify
+    preCorrected = rxFrame(1:state.preLen);
+    preDemod = qamdemod(preCorrected, p.M, 'UnitAveragePower', true);
+    pilotMatch = sum(preDemod == double(state.pilotSeq));
+    fprintf('dbg-preamble: rawPhase=%.3f | snap=%.3f | match=%d/%d\n', ...
+        rawPhase, snapPhase, pilotMatch, state.preLen);
+    
+    if pilotMatch < 80
+        fprintf('dbg: poor preamble match, skipping frame\n');
+        continue;
+    end
+    
     rxPay = extractPayload(rxFrame, state.segStarts, state.segLens, state.numSeg);
 
 

@@ -107,7 +107,8 @@ state.startTime = tic;
 io.plutoTx = [];
 io.plutoRx = [];
 
-samplesPerFrame = (state.txFrameSyms * p.sps) + 2*state.trimSamples;
+%samplesPerFrame = (state.txFrameSyms * p.sps) + 2*state.trimSamples;
+samplesPerFrame = (state.txFrameSyms * p.sps) + 2*state.trimSamples + 2000*p.sps;
 
 
 if strcmpi(p.MODE,'transmit')
