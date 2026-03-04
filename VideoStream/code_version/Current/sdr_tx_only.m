@@ -1,4 +1,4 @@
-function rxData = sdr_tx_only(txSyms, srrc, p, trimSamples, plutoTx)
+function rxData = sdr_tx_only(txSyms, srrc, p, trimSamples, plutoTx, verbose_debug)
    rxData = [];
    if isempty(plutoTx)
        error('pluto transmitter object not initialized.');
@@ -10,8 +10,10 @@ function rxData = sdr_tx_only(txSyms, srrc, p, trimSamples, plutoTx)
    try
        % use step call (streaming) instead of transmitRepeat
        underrun = plutoTx(txWave);
+       if(verbose_debug)
        fprintf('dbg: tx step | samples=%d | rms=%.4g | underrun=%d\n', ...
            length(txWave), rms(double(txWave)), underrun);
+       end
    catch err
        warning('pluto transmit failed: %s', e.message);
    end

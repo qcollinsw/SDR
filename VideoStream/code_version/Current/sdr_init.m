@@ -1,13 +1,39 @@
 % File: sdr_init.m
-function [state, io, ui] = sdr_init(p)
-
-if abs(log2(p.M) - round(log2(p.M))) > 0
-    error('M must be a power of two.');
-end
+function [state, io, ui, p] = sdr_init(MODE, M)
 
 state = struct();
 io = struct();
 ui = struct();
+p = struct();
+
+state.verbose_debug = false;
+p.MODE = MODE;
+
+p.M = M;
+p.imgR = 120;
+p.imgC = 160;
+
+p.snrDb = 20;
+
+p.sps = 4;
+p.Fs = 100000;
+p.freqOffsetHz = 2500;
+
+p.centerFreq = 2.45e9;
+p.txGain = -10;
+p.rxGain = 20;
+
+p.modType = 'qam';     % 'qam' or 'psk'
+
+p.bitsPerSym = log2(p.M);
+
+p.scaleTx = (p.M-1)/255;
+p.scaleRx = 255/(p.M-1);
+
+
+if abs(log2(p.M) - round(log2(p.M))) > 0
+    error('M must be a power of two.');
+end
 
 rs_m = log2(p.M);
 state.fec.n = 2^rs_m - 1;
