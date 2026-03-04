@@ -45,8 +45,6 @@ while state.RUNNING && isvalid(ui.fig)
             fprintf('*** WARNING: coded symbol %d exceeds M-1=%d, will wrap in qammod ***\n', max(codedPayload), p.M-1);
         end
         txSyms = buildTxFrame(codedPayload, state.idealPilotSyms, p.M, state.numSeg, state.segLens, state.numMidambles);
-        guardLen = 5000;
-        txSyms = [txSyms; zeros(guardLen, 1)];
     else
         txSyms = [];
         payload = [];
