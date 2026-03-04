@@ -45,6 +45,8 @@ while state.RUNNING && isvalid(ui.fig)
             fprintf('*** WARNING: coded symbol %d exceeds M-1=%d, will wrap in qammod ***\n', max(codedPayload), p.M-1);
         end
         txSyms = buildTxFrame(codedPayload, state.idealPilotSyms, p.M, state.numSeg, state.segLens, state.numMidambles);
+        guardLen = 5000;
+        txSyms = [txSyms; zeros(guardLen, 1)];
     else
         txSyms = [];
         payload = [];
@@ -87,423 +89,440 @@ while state.RUNNING && isvalid(ui.fig)
 
 
 %% barker code and frame sync
-%% barker code and frame sync (instrumented + rebuild mids to prevent drift + robust cfo anchors)
 
-% ---- frame schedule rebuild (must match tx) ----
-preLen  = state.preLen;
-midLen  = state.preLen;
-postLen = state.preLen;
+%% frame sync — multi-candidate preamble + chunk-wise pilot hunt
 
-numMids = 38;
-numSeg  = numMids + 1;
+pilot = state.idealPilotSyms(:);
+pilotLen = length(pilot);
+pilotN = norm(pilot);
+pilotSeqU8 = double(state.pilotSeq(:));
 
-codedPayloadLen = 96000;
-
-padLen = mod(-codedPayloadLen, numSeg);          % 0..numSeg-1
-codedPayloadLenEff = codedPayloadLen + padLen;   % used for scheduling
-segLen = codedPayloadLenEff / numSeg;            % integer by construction
-segLens = segLen * ones(numSeg, 1);
-
-midStarts = zeros(numMids, 1);
-idx = preLen + 1;                                % payload starts right after preamble
-for m = 1:numMids
-    idx = idx + segLens(m);                      % payload segment m
-    midStarts(m) = idx;                          % midamble m start
-    idx = idx + midLen;                          % midamble itself
-end
-state.midStarts = midStarts;
-
-postStart = preLen + codedPayloadLenEff + numMids*midLen + 1;
-state.postStart = postStart;
-
-state.txFrameSyms = preLen + codedPayloadLenEff + numMids*midLen + postLen;
-
-allMidStarts = state.midStarts(:);
-ms1 = state.midStarts(1);
-ms2 = state.midStarts(2);
-ps  = state.postStart;
-
-% ---- choose longest available buffer ----
-rxLong = rxData_proc;  % replace with your longest raw buffer if different
-
-% ---- normalize long buffer ----
+% normalize rx buffer
+rxLong = rxData_proc;
 rxPwr = mean(abs(rxLong).^2);
-rxDen = max(sqrt(rxPwr), 1e-12);
-rxLongN = rxLong / rxDen;
+rxLong = rxLong / max(sqrt(rxPwr), 1e-12);
 
-fprintf('dbg-norm-long: rxLen=%d | rxPwr=%.6g | denom=%.6g | postPwr=%.6g | postMax=%.6g | postDc=%.6g%+.6gj\n', ...
-    length(rxLongN), rxPwr, rxDen, mean(abs(rxLongN).^2), max(abs(rxLongN)), real(mean(rxLongN)), imag(mean(rxLongN)));
+fprintf('dbg-hunt: rxLen=%d | pilotLen=%d | numMids=%d | numSeg=%d | codedPayloadLen=%d\n', ...
+    length(rxLong), pilotLen, state.numMidambles, state.numSeg, state.codedPayloadLen);
 
-maxStart = length(rxLongN) - state.txFrameSyms + 1;
-fprintf('dbg-align-long: maxStart=%d | needFrameSyms=%d\n', maxStart, state.txFrameSyms);
-if maxStart < 1
-    fprintf('dbg-align-long: too short | have=%d need=%d\n', length(rxLongN), state.txFrameSyms);
+corrAt = @(buf, pos) abs(buf(pos:pos+pilotLen-1)' * pilot) / ...
+    (norm(buf(pos:pos+pilotLen-1)) * pilotN + 1e-12);
+
+% ============================================================
+%  step 1: find ALL preamble candidates, pick best by midamble score
+% ============================================================
+maxSearch = length(rxLong) - state.txFrameSyms + 1;
+if maxSearch < 1
+    fprintf('dbg-hunt: buffer too short | have=%d need=%d\n', length(rxLong), state.txFrameSyms);
     continue;
 end
 
-pilot  = state.idealPilotSyms(:);
-pilotN = norm(pilot) + 1e-12;
-
-corrPilot  = @(seg) abs((seg(:)' * pilot) / preLen);
-corrPilotN = @(seg) abs(seg(:)' * pilot) / ((norm(seg(:)) + 1e-12) * pilotN);
-segPwr     = @(seg) mean(abs(seg(:)).^2);
-
-gatePre = 0.90;
-
-% ---- coarse-to-fine start search ----
+% coarse scan — collect all positions above threshold
 step = 4;
-bestScore = -inf; bestStart = 1;
-best_cPre = NaN; best_cPreN = NaN; best_prePwr = NaN;
-best_cM1  = NaN; best_cM1N  = NaN; best_m1Pwr  = NaN;
-best_cM2  = NaN; best_cM2N  = NaN; best_m2Pwr  = NaN;
-
-prePass = 0; preFail = 0;
-maxPre = -inf; argMaxPre = 1; maxPreN = -inf;
-
-for s0 = 1:step:maxStart
-    preSeg = rxLongN(s0 : s0+preLen-1);
-    cPre  = corrPilot(preSeg);
-    cPreN = corrPilotN(preSeg);
-
-    if cPre > maxPre
-        maxPre = cPre; argMaxPre = s0; maxPreN = cPreN;
-    end
-
-    if cPre < gatePre
-        preFail = preFail + 1;
-        continue;
-    end
-    prePass = prePass + 1;
-
-    m1Seg = rxLongN(s0+ms1-1 : s0+ms1-1+preLen-1);
-    m2Seg = rxLongN(s0+ms2-1 : s0+ms2-1+preLen-1);
-
-    cM1 = corrPilot(m1Seg);
-    cM2 = corrPilot(m2Seg);
-
-    score = 3*(cPre^2) + 2*(cM1^2) + 1*(cM2^2);
-
-    if score > bestScore
-        bestScore = score;
-        bestStart = s0;
-
-        best_cPre = cPre; best_cPreN = cPreN; best_prePwr = segPwr(preSeg);
-        best_cM1  = cM1;  best_cM1N  = corrPilotN(m1Seg); best_m1Pwr  = segPwr(m1Seg);
-        best_cM2  = cM2;  best_cM2N  = corrPilotN(m2Seg); best_m2Pwr  = segPwr(m2Seg);
+candidates = zeros(0, 2);
+for s0 = 1:step:maxSearch
+    c = corrAt(rxLong, s0);
+    if c > 0.90
+        candidates(end+1,:) = [s0, c]; %#ok<AGROW>
     end
 end
 
-fprintf('dbg-align-long: step=%d | gatePre=%.3f | prePass=%d preFail=%d | maxPre=%.3f maxPreN=%.3f at s0=%d\n', ...
-    step, gatePre, prePass, preFail, maxPre, maxPreN, argMaxPre);
-
-if ~isfinite(bestScore)
-    fprintf('dbg-align-long: gate blocked; best preamble anywhere is maxPre=%.3f maxPreN=%.3f at s0=%d\n', ...
-        maxPre, maxPreN, argMaxPre);
+if isempty(candidates)
+    fprintf('dbg-hunt: no preamble candidates found, skipping\n');
     continue;
 end
 
-if step > 1
-    win = 4*step*10;
-    sLo = max(1, bestStart - win);
-    sHi = min(maxStart, bestStart + win);
-
-    bestScoreFine = -inf; bestStartFine = bestStart;
-    for s0 = sLo:sHi
-        preSeg = rxLongN(s0 : s0+preLen-1);
-        cPre = corrPilot(preSeg);
-        if cPre < gatePre, continue; end
-
-        m1Seg = rxLongN(s0+ms1-1 : s0+ms1-1+preLen-1);
-        m2Seg = rxLongN(s0+ms2-1 : s0+ms2-1+preLen-1);
-
-        cM1 = corrPilot(m1Seg);
-        cM2 = corrPilot(m2Seg);
-
-        score = 3*(cPre^2) + 2*(cM1^2) + 1*(cM2^2);
-        if score > bestScoreFine
-            bestScoreFine = score;
-            bestStartFine = s0;
+% fine-tune each candidate
+for ci = 1:size(candidates,1)
+    sLo = max(1, candidates(ci,1) - step*4);
+    sHi = min(maxSearch, candidates(ci,1) + step*4);
+    for s1 = sLo:sHi
+        c2 = corrAt(rxLong, s1);
+        if c2 > candidates(ci,2)
+            candidates(ci,:) = [s1, c2];
         end
     end
-
-    fprintf('dbg-align-long-refine: win=±%d | coarseStart=%d | fineStart=%d | fineScore=%.6g\n', ...
-        win, bestStart, bestStartFine, bestScoreFine);
-
-    bestStart = bestStartFine;
 end
 
-fprintf('dbg-align-best-long: s0=%d | score=%.6g | pre c=%.3f cN=%.3f pwr=%.6g | m1 c=%.3f cN=%.3f pwr=%.6g | m2 c=%.3f cN=%.3f pwr=%.6g\n', ...
-    bestStart, bestScore, best_cPre, best_cPreN, best_prePwr, best_cM1, best_cM1N, best_m1Pwr, best_cM2, best_cM2N, best_m2Pwr);
-
-rxFrame = rxLongN(bestStart : bestStart + state.txFrameSyms - 1);
-fprintf('dbg-frame-long: extracted | len=%d | pwr=%.6g | max=%.6g | dc=%.6g%+.6gj\n', ...
-    length(rxFrame), mean(abs(rxFrame).^2), max(abs(rxFrame)), real(mean(rxFrame)), imag(mean(rxFrame)));
-
-% ---- timing drift probe ----
-dWin = 16;
-for m = 1:length(allMidStarts)
-    ms = allMidStarts(m);
-    bestLocal = -inf; bestD = 0; bestLocalN = -inf;
-
-    for d = -dWin:dWin
-        ii = ms + d;
-        if ii < 1 || (ii + preLen - 1) > length(rxFrame), continue; end
-        seg = rxFrame(ii : ii + preLen - 1);
-        c  = corrPilot(seg);
-        cN = corrPilotN(seg);
-        if c > bestLocal
-            bestLocal = c;
-            bestLocalN = cN;
-            bestD = d;
+% deduplicate candidates within 100 samples of each other
+dedupCands = candidates(1,:);
+for ci = 2:size(candidates,1)
+    if all(abs(candidates(ci,1) - dedupCands(:,1)) > 100)
+        dedupCands(end+1,:) = candidates(ci,:); %#ok<AGROW>
+    else
+        % keep the stronger one
+        [~, idx] = min(abs(candidates(ci,1) - dedupCands(:,1)));
+        if candidates(ci,2) > dedupCands(idx,2)
+            dedupCands(idx,:) = candidates(ci,:);
         end
     end
+end
+candidates = dedupCands;
 
-    fprintf('dbg-timing: mid%02d | ms=%d | bestD=%+d | corr=%.3f | corrN=%.3f\n', ...
-        m, ms, bestD, bestLocal, bestLocalN);
+fprintf('dbg-hunt: found %d preamble candidates\n', size(candidates,1));
+
+% score each candidate by consecutive good midambles
+checkMids = min(state.numMidambles, 10);
+bestScore = -1;
+bestPrePos = 1;
+bestPreCorr = 0;
+
+for ci = 1:size(candidates,1)
+    s0 = candidates(ci,1);
+    score = 0;
+    cur = s0 + pilotLen;
+    for seg = 1:checkMids
+        expMid = round(cur + state.segLens(seg));
+        sLo2 = max(expMid - 20, cur + 1);
+        sHi2 = min(expMid + 20, length(rxLong) - pilotLen + 1);
+        if sHi2 <= sLo2, break; end
+        bestC = 0;
+        for s = sLo2:sHi2
+            if s + pilotLen - 1 > length(rxLong), break; end
+            c = corrAt(rxLong, s);
+            if c > bestC, bestC = c; end
+        end
+        if bestC > 0.85
+            score = score + 1;
+            cur = expMid + pilotLen;
+        else
+            break;
+        end
+    end
+    fprintf('dbg-hunt: candidate %d | pos=%d | corrN=%.4f | goodMids=%d/%d\n', ...
+        ci, candidates(ci,1), candidates(ci,2), score, checkMids);
+    if score > bestScore || (score == bestScore && candidates(ci,2) > bestPreCorr)
+        bestScore = score;
+        bestPrePos = candidates(ci,1);
+        bestPreCorr = candidates(ci,2);
+    end
 end
 
-% ---- rotation ambiguity ----
-pre = rxFrame(1:preLen);
+fprintf('dbg-hunt: selected preamble at %d | corrN=%.4f | goodMids=%d/%d\n', ...
+    bestPrePos, bestPreCorr, bestScore, checkMids);
 
-fprintf('dbg-rot: start | preSeg pwr=%.6g max=%.6g dc=%.6g%+.6gj\n', ...
-    mean(abs(pre).^2), max(abs(pre)), real(mean(pre)), imag(mean(pre)));
+if bestPreCorr < 0.80
+    fprintf('dbg-hunt: preamble too weak (%.3f), skipping\n', bestPreCorr);
+    continue;
+end
 
-bestMatch = -1;
+% ============================================================
+%  step 2: resolve 90-degree rotation using preamble
+% ============================================================
+preSeg = rxLong(bestPrePos : bestPrePos + pilotLen - 1);
 bestRot = 0;
+bestMatch = 0;
 for rot = [0, pi/2, pi, 3*pi/2]
-    testPre = pre .* exp(-1j * rot);
-    testDemod = qamdemod(testPre, p.M, 'UnitAveragePower', true);
-    m = sum(testDemod == double(state.pilotSeq));
-    fprintf('dbg-rot: rot=%.0fdeg | match=%d/%d\n', rot*180/pi, m, preLen);
+    d = qamdemod(preSeg .* exp(-1j*rot), p.M, 'UnitAveragePower', true);
+    m = sum(double(d) == pilotSeqU8);
     if m > bestMatch
         bestMatch = m;
         bestRot = rot;
     end
 end
-fprintf('dbg-rot: chosen rot=%.0fdeg | bestMatch=%d/%d\n', bestRot*180/pi, bestMatch, preLen);
+fprintf('dbg-hunt: rotation=%d deg | match=%d/%d\n', round(bestRot*180/pi), bestMatch, pilotLen);
 
-rxFrame = rxFrame .* exp(-1j * bestRot);
-
-% ---- fine phase snap ----
-pre = rxFrame(1:preLen);
-dotPre = pre(:)' * pilot;
-finePhase = angle(dotPre);
-
-fprintf('dbg-phase: dotPre=%.6g%+.6gj | abs=%.6g | ang=%.3fdeg | corrGate=%.3f | corrNorm=%.3f\n', ...
-    real(dotPre), imag(dotPre), abs(dotPre), finePhase*180/pi, abs(dotPre)/preLen, abs(dotPre)/((norm(pre)+1e-12)*pilotN));
-
-rxFrame = rxFrame .* exp(-1j * finePhase);
-
-preDemod = qamdemod(rxFrame(1:preLen), p.M, 'UnitAveragePower', true);
-pilotMatch = sum(preDemod == double(state.pilotSeq));
-fprintf('dbg-precheck: match=%d/%d\n', pilotMatch, preLen);
-
-if pilotMatch < 100
-    fprintf('dbg: poor preamble match (%d/%d), skipping\n', pilotMatch, preLen);
-    preNow = rxFrame(1:preLen);
-    mseNow = mean(abs(preNow - pilot).^2);
-    cNow   = abs(preNow(:)'*pilot)/preLen;
-    cNowN  = abs(preNow(:)'*pilot)/((norm(preNow)+1e-12)*pilotN);
-    fprintf('dbg-precheck-detail: mse=%.6g | corr=%.3f | corrN=%.3f | prePwr=%.6g\n', ...
-        mseNow, cNow, cNowN, mean(abs(preNow).^2));
+if bestMatch < pilotLen - 2
+    fprintf('dbg-hunt: poor rotation match (%d/%d), skipping\n', bestMatch, pilotLen);
     continue;
 end
 
-%% residual frequency offset correction (robust anchors + collapse stop), using rebuilt mids
+% apply rotation from preamble onward
+rxRot = rxLong(bestPrePos:end) .* exp(-1j * bestRot);
 
-numPotential = 1 + numMids + 1;
+% fine phase snap
+preFine = rxRot(1:pilotLen);
+dotPre = preFine(:)' * pilot;
+finePhase = angle(dotPre);
+rxRot = rxRot .* exp(-1j * finePhase);
+fprintf('dbg-hunt: finePhase=%.2f deg\n', finePhase * 180/pi);
 
-ap    = zeros(numPotential, 1);
-aph   = zeros(numPotential, 1);
-ac    = zeros(numPotential, 1);
-corrN = zeros(numPotential, 1);
+% verify
+preCheck = qamdemod(rxRot(1:pilotLen), p.M, 'UnitAveragePower', true);
+preMatch = sum(double(preCheck) == pilotSeqU8);
+fprintf('dbg-hunt: post-correction preamble match=%d/%d\n', preMatch, pilotLen);
 
-anchor_meas = @(seg) deal( ...
-    (seg(:)'*pilot)/preLen, ...
-    abs((seg(:)'*pilot)/preLen), ...
-    angle((seg(:)'*pilot)/preLen), ...
-    abs(seg(:)'*pilot)/((norm(seg(:))+1e-12)*pilotN), ...
-    mean(abs(seg(:)).^2) );
-
-k = 1;
-preSeg = rxFrame(1:preLen);
-[cC, cAbs, cAng, cN, ~] = anchor_meas(preSeg);
-ap(k)    = 1 + floor(preLen/2);
-aph(k)   = cAng;
-ac(k)    = cAbs;
-corrN(k) = cN;
-
-fprintf('dbg-freq-anch: pre | ap=%d | c=%.6g%+.6gj | abs=%.6g | ang=%.3fdeg | corrN=%.3f\n', ...
-    ap(k), real(cC), imag(cC), cAbs, cAng*180/pi, cN);
-
-for m = 1:numMids
-    k = k + 1;
-    ms = allMidStarts(m);
-    seg = rxFrame(ms : ms + midLen - 1);
-    [cC, cAbs, cAng, cN, ~] = anchor_meas(seg);
-
-    ap(k)    = ms + floor(midLen/2);
-    aph(k)   = cAng;
-    ac(k)    = cAbs;
-    corrN(k) = cN;
-
-    fprintf('dbg-freq-anch: mid%02d | ms=%d ap=%d | abs=%.6g | ang=%.3fdeg | corrN=%.3f\n', ...
-        m, ms, ap(k), cAbs, cAng*180/pi, cN);
+if preMatch < pilotLen - 4
+    fprintf('dbg-hunt: preamble verify failed (%d/%d), skipping\n', preMatch, pilotLen);
+    continue;
 end
 
-k = k + 1;
-postSeg = rxFrame(ps : ps + postLen - 1);
-[cC, cAbs, cAng, cN, ~] = anchor_meas(postSeg);
+% ============================================================
+%  step 3: hunt for each midamble, extract payload chunks
+% ============================================================
+ternary = @(cond, a, b) subsref({b, a}, struct('type','{}','subs',{{cond+1}}));
+huntWin = 20;
 
-ap(k)    = ps + floor(postLen/2);
-aph(k)   = cAng;
-ac(k)    = cAbs;
-corrN(k) = cN;
+corrAtR = @(pos) abs(rxRot(pos:pos+pilotLen-1)' * pilot) / ...
+    (norm(rxRot(pos:pos+pilotLen-1)) * pilotN + 1e-12);
 
-fprintf('dbg-freq-anch: post | ps=%d ap=%d | abs=%.6g | ang=%.3fdeg | corrN=%.3f\n', ...
-    ps, ap(k), cAbs, cAng*180/pi, cN);
+anchorPos = zeros(state.numMidambles + 2, 1);
+anchorCorr = zeros(state.numMidambles + 2, 1);
+anchorPhase = zeros(state.numMidambles + 2, 1);
 
-ampThr  = 0.4 * ac(1);
-corrThr = 0.985;
-validBase = (ac >= ampThr) & (corrN >= corrThr);
+anchorPos(1) = 1;
+anchorCorr(1) = 1.0;
+anchorPhase(1) = 0;
 
-stopIdx = numPotential;
-badRun = 0;
-for ii = 2:(numPotential-1)
-    if corrN(ii) < 0.95
-        badRun = badRun + 1;
-    else
-        badRun = 0;
-    end
-    if badRun >= 2
-        stopIdx = ii - 1;
-        break;
-    end
-end
+payloadChunks = cell(state.numSeg, 1);
+cursor = pilotLen + 1;
+hitBoundary = false;
 
-validIdx = validBase;
-if stopIdx < numPotential
-    validIdx((stopIdx+1):end) = false;
-end
-
-fprintf('dbg-freq-gate: ampThr=%.6g (0.4*preAbs) corrThr=%.3f | stopIdx=%d/%d | valid=%d/%d\n', ...
-    ampThr, corrThr, stopIdx, numPotential, sum(validIdx), numPotential);
-fprintf('dbg-freq-gate: corrN[min,med,max]=[%.3f, %.3f, %.3f]\n', min(corrN), median(corrN), max(corrN));
-
-if sum(validIdx) >= 2
-    x = double(ap(validIdx));
-    y = unwrap(double(aph(validIdx)));
-    y = y - y(1);
-
-    w = (ac(validIdx) / (max(ac(validIdx)) + 1e-12)).^4;
-    w = w / (max(w) + 1e-12);
-
-    A  = [ones(size(x)) x];
-    Aw = A .* sqrt(w);
-    yw = y .* sqrt(w);
-    theta = (Aw.'*Aw) \ (Aw.'*yw);
-
-    a = theta(1);
-    b = theta(2);
-
-    yhat = A*theta;
-    wrmse = sqrt(sum(w .* (y - yhat).^2) / (max(sum(w), 1e-12)));
-    driftDeg = (b * double(state.txFrameSyms)) * 180/pi;
-
-    fprintf('dbg-freq-fit: a=%.6g rad | b=%.6g rad/sym | drift=%.3f deg over %d syms | cond(AtWA)=%.3g | wrmse=%.6g rad\n', ...
-        a, b, driftDeg, state.txFrameSyms, cond(Aw.'*Aw), wrmse);
-    fprintf('dbg-freq-fit: x[min,max]=[%d,%d] | y[min,max]=[%.6g,%.6g] rad | w[min,max]=[%.6g,%.6g]\n', ...
-        round(min(x)), round(max(x)), min(y), max(y), min(w), max(w));
-
-    n = (1:state.txFrameSyms).';
-    rxFrame = rxFrame .* exp(-1j * (a + b*double(n)));
-
-    fprintf('dbg-freq: anchors=%d/%d | drift=%.3f deg\n', sum(validIdx), numPotential, driftDeg);
-else
-    fprintf('dbg-freq: insufficient anchors after gating, skipping\n');
-end
-
-% ---- post-correction verification ----
-preFinal = rxFrame(1:preLen);
-preFinalDemod = qamdemod(preFinal, p.M, 'UnitAveragePower', true);
-preMatchFinal = sum(preFinalDemod == double(state.pilotSeq));
-
-cFinal  = abs(preFinal(:)'*pilot)/preLen;
-cFinalN = abs(preFinal(:)'*pilot)/((norm(preFinal)+1e-12)*pilotN);
-mseFinal = mean(abs(preFinal - pilot).^2);
-prePwrFinal = mean(abs(preFinal).^2);
-
-fprintf('dbg-align-final: match=%d/%d | mse=%.6g | corr=%.6g | corrN=%.3f | prePwr=%.6g\n', ...
-    preMatchFinal, preLen, mseFinal, cFinal, cFinalN, prePwrFinal);
-
-m1SegF = rxFrame(ms1:ms1+preLen-1);
-m2SegF = rxFrame(ms2:ms2+preLen-1);
-
-cM1F  = abs(m1SegF(:)'*pilot)/preLen;
-cM1FN = abs(m1SegF(:)'*pilot)/((norm(m1SegF)+1e-12)*pilotN);
-cM2F  = abs(m2SegF(:)'*pilot)/preLen;
-cM2FN = abs(m2SegF(:)'*pilot)/((norm(m2SegF)+1e-12)*pilotN);
-
-fprintf('dbg-mid-final: m1 corr=%.6g corrN=%.3f pwr=%.6g | m2 corr=%.6g corrN=%.3f pwr=%.6g\n', ...
-    cM1F, cM1FN, mean(abs(m1SegF).^2), cM2F, cM2FN, mean(abs(m2SegF).^2));
-
-% ---- payload extraction consistent with rebuilt schedule ----
-payloadStart = preLen + 1;
-payloadEnd   = preLen + codedPayloadLenEff + numMids*midLen;
-
-rawPayload = rxFrame(payloadStart:payloadEnd);
-
-mask = true(size(rawPayload));
-for m = 1:numMids
-    ms = allMidStarts(m);
-    midRel = ms - payloadStart + 1;
-    mask(midRel:midRel+midLen-1) = false;
-end
-rxPayloadSyms = rawPayload(mask);
-
-if length(rxPayloadSyms) ~= codedPayloadLenEff
-    fprintf('dbg-payload: unexpected len=%d expected=%d\n', length(rxPayloadSyms), codedPayloadLenEff);
-else
-    fprintf('dbg-payload: extracted payload len=%d (padLen=%d)\n', codedPayloadLenEff, padLen);
-end
-
-if padLen > 0 && length(rxPayloadSyms) >= codedPayloadLen
-    rxPayloadSyms = rxPayloadSyms(1:codedPayloadLen);
-end
-%% demod and decode
-    rxPay = extractPayload(rxFrame, state.segStarts, state.segLens, state.numSeg);
-    rxDemod = qamdemod(rxPay, p.M, 'UnitAveragePower', true);
-    fprintf('dbg-demod: len=%d | mod63=%d\n', length(rxDemod), mod(length(rxDemod), 63));
-    fprintf('dbg-demod-rx: min=%d max=%d unique=%d\n', min(rxDemod), max(rxDemod), numel(unique(rxDemod)));
-
-    try
-        [imgU8, bitErrors, nBits, nCorrSyms] = decodeAndMeasure(rxDemod, state.rsDec, state.prbsSeq, state.dataNeeded, payload, p);
-        fprintf('dbg-pre-decode: rxDemod len=%d | mod(len,fec.n)=%d | mod(len,fec.k)=%d\n', ...
-        length(rxDemod), mod(length(rxDemod), state.fec.n), mod(length(rxDemod), state.fec.k));
-
-        state.totalCorrectedSymbols = state.totalCorrectedSymbols + nCorrSyms;
-        set(ui.hRx, 'CData', reshape(imgU8, p.imgR, p.imgC));
-
-        state.totalBitErrors = state.totalBitErrors + bitErrors;
-        state.totalBits = state.totalBits + nBits;
-        state.totalFrames = state.totalFrames + 1;
-
-    catch err
-        fprintf('dbg-decode: %s at line %d | func=%s\n', err.message, err.stack(1).line, err.stack(1).name);
+for seg = 1:state.numSeg
+    if hitBoundary
+        payloadChunks{seg} = zeros(state.segLens(seg), 1);
         continue;
     end
 
-    elapsed = toc(state.startTime);
-    fps = state.totalFrames / max(elapsed, 1e-9);
-    ber = state.totalBitErrors / max(state.totalBits, 1);
+    expectedMidPos = round(cursor + state.segLens(seg));
 
-    if ~isempty(ui.hSc) && isgraphics(ui.hSc)
-        set(ui.hSc, 'XData', real(rxPay(1:min(2000,end))), 'YData', imag(rxPay(1:min(2000,end))));
+    if seg <= state.numMidambles
+        % hunt for midamble
+        searchLo = max(expectedMidPos - huntWin, cursor + 1);
+        searchHi = min(expectedMidPos + huntWin, length(rxRot) - pilotLen + 1);
+
+        bestMidCorr = -1;
+        bestMidPos = expectedMidPos;
+
+        for s = searchLo:searchHi
+            if s + pilotLen - 1 > length(rxRot), break; end
+            c = corrAtR(s);
+            if c > bestMidCorr
+                bestMidCorr = c;
+                bestMidPos = s;
+            end
+        end
+
+        payEnd = bestMidPos - 1;
+        actualLen = payEnd - cursor + 1;
+        expectedLen = state.segLens(seg);
+
+        if bestMidCorr > 0.85 && abs(actualLen - expectedLen) <= 20
+            % strong match — trust hunt
+            payloadChunks{seg} = rxRot(cursor : payEnd);
+            nextCursor = bestMidPos + pilotLen;
+        else
+            % boundary or noise — zero-fill this and all remaining
+            fprintf('dbg-hunt: seg%02d | boundary detected (corrN=%.3f), zero-filling rest\n', seg, bestMidCorr);
+            for fillSeg = seg:state.numSeg
+                payloadChunks{fillSeg} = zeros(state.segLens(fillSeg), 1);
+            end
+            for fillAnch = (seg+1):(state.numMidambles+2)
+                anchorCorr(fillAnch) = 0;
+                anchorPhase(fillAnch) = 0;
+            end
+            hitBoundary = true;
+            continue;
+        end
+
+        % pad/trim to exact length
+        if length(payloadChunks{seg}) < expectedLen
+            deficit = expectedLen - length(payloadChunks{seg});
+            payloadChunks{seg} = [payloadChunks{seg}; zeros(deficit, 1)];
+        elseif length(payloadChunks{seg}) > expectedLen
+            payloadChunks{seg} = payloadChunks{seg}(1:expectedLen);
+        end
+
+        % measure phase
+        anchorIdx = seg + 1;
+        midSeg = rxRot(bestMidPos : min(bestMidPos + pilotLen - 1, length(rxRot)));
+        if length(midSeg) == pilotLen
+            midDot = midSeg(:)' * pilot;
+            midPhase = angle(midDot);
+            midCorrN = abs(midDot) / ((norm(midSeg) + 1e-12) * pilotN);
+        else
+            midPhase = 0; midCorrN = 0;
+        end
+
+        anchorPos(anchorIdx) = bestMidPos;
+        anchorCorr(anchorIdx) = midCorrN;
+        anchorPhase(anchorIdx) = midPhase;
+
+        fprintf('dbg-hunt: seg%02d | midFound=%d | corrN=%.3f | phase=%.2f deg | chunkLen=%d (expect %d) | drift=%+d | mode=%s\n', ...
+            seg, bestMidPos, midCorrN, midPhase*180/pi, actualLen, expectedLen, actualLen - expectedLen, ...
+            ternary(bestMidCorr > 0.85 && abs(actualLen - expectedLen) <= 20, 'lock', 'det'));
+
+        cursor = nextCursor;
+
+    else
+        % last segment — hunt for postamble
+        searchLo = max(expectedMidPos - huntWin, cursor + 1);
+        searchHi = min(expectedMidPos + huntWin, length(rxRot) - pilotLen + 1);
+
+        bestPostCorr = -1;
+        bestPostPos = min(expectedMidPos, length(rxRot) - pilotLen + 1);
+
+        for s = searchLo:searchHi
+            if s + pilotLen - 1 > length(rxRot), break; end
+            c = corrAtR(s);
+            if c > bestPostCorr
+                bestPostCorr = c;
+                bestPostPos = s;
+            end
+        end
+
+        expectedLen = state.segLens(seg);
+        payEnd = bestPostPos - 1;
+        actualLen = payEnd - cursor + 1;
+
+        if bestPostCorr > 0.85 && abs(actualLen - expectedLen) <= 20
+            payloadChunks{seg} = rxRot(cursor : payEnd);
+        else
+            payloadChunks{seg} = zeros(expectedLen, 1);
+            fprintf('dbg-hunt: seg%02d (last) | boundary detected (corrN=%.3f), zero-filled\n', seg, bestPostCorr);
+        end
+
+        if length(payloadChunks{seg}) < expectedLen
+            deficit = expectedLen - length(payloadChunks{seg});
+            payloadChunks{seg} = [payloadChunks{seg}; zeros(deficit, 1)];
+        elseif length(payloadChunks{seg}) > expectedLen
+            payloadChunks{seg} = payloadChunks{seg}(1:expectedLen);
+        end
+
+        if bestPostCorr > 0.85 && bestPostPos + pilotLen - 1 <= length(rxRot)
+            postSeg = rxRot(bestPostPos : bestPostPos + pilotLen - 1);
+            postDot = postSeg(:)' * pilot;
+            postPhase = angle(postDot);
+            postCorrN = abs(postDot) / ((norm(postSeg) + 1e-12) * pilotN);
+        else
+            postPhase = 0; postCorrN = 0;
+        end
+
+        anchorPos(end) = bestPostPos;
+        anchorCorr(end) = postCorrN;
+        anchorPhase(end) = postPhase;
+
+        fprintf('dbg-hunt: seg%02d (last) | postFound=%d | corrN=%.3f | phase=%.2f deg | chunkLen=%d (expect %d) | drift=%+d\n', ...
+            seg, bestPostPos, postCorrN, postPhase*180/pi, actualLen, expectedLen, actualLen - expectedLen);
+    end
+end
+
+% ============================================================
+%  step 4: piecewise phase correction
+% ============================================================
+numAnch = state.numMidambles + 2;
+phRaw = anchorPhase(1:numAnch);
+
+useThr = 0.80;
+useFlag = anchorCorr(1:numAnch) >= useThr;
+useFlag(1) = true;
+
+fprintf('dbg-phase: usable anchors=%d/%d\n', sum(useFlag), numAnch);
+
+phUnwrap = phRaw;
+if sum(useFlag) >= 2
+    idxU = find(useFlag);
+    phUnwrap(idxU) = unwrap(phRaw(idxU));
+
+    % nearest-neighbor fill for unusable anchors
+    for k = 1:numAnch
+        if ~useFlag(k)
+            dists = abs(k - idxU);
+            [~, nearest] = min(dists);
+            phUnwrap(k) = phUnwrap(idxU(nearest));
+        end
+    end
+end
+
+for seg = 1:state.numSeg
+    chunk = payloadChunks{seg};
+    if isempty(chunk) || all(chunk == 0), continue; end
+
+    leftAnch = seg;
+    rightAnch = seg + 1;
+
+    ph0 = phUnwrap(leftAnch);
+    ph1 = phUnwrap(rightAnch);
+    n = length(chunk);
+    ramp = linspace(ph0, ph1, n).';
+    payloadChunks{seg} = chunk .* exp(-1j * ramp);
+end
+
+% ============================================================
+%  step 5: assemble payload
+% ============================================================
+rxPayloadSyms = vertcat(payloadChunks{:});
+
+fprintf('dbg-hunt: assembled payload len=%d | expected=%d\n', ...
+    length(rxPayloadSyms), state.codedPayloadLen);
+
+if length(rxPayloadSyms) > state.codedPayloadLen
+    rxPayloadSyms = rxPayloadSyms(1:state.codedPayloadLen);
+elseif length(rxPayloadSyms) < state.codedPayloadLen
+    deficit = state.codedPayloadLen - length(rxPayloadSyms);
+    fprintf('dbg-hunt: SHORT by %d, zero-padding\n', deficit);
+    rxPayloadSyms = [rxPayloadSyms; zeros(deficit, 1)];
+end
+
+rxFrame = rxRot;
+rxPay = rxPayloadSyms;
+
+fprintf('dbg-hunt: done | payLen=%d | pwr=%.4g\n', length(rxPay), mean(abs(rxPay).^2));
+
+
+
+%% demod and decode
+rxDemod = qamdemod(rxPay, p.M, 'UnitAveragePower', true);
+fprintf('dbg-demod: len=%d | mod63=%d\n', length(rxDemod), mod(length(rxDemod), 63));
+fprintf('dbg-demod-rx: min=%d max=%d unique=%d\n', min(rxDemod), max(rxDemod), numel(unique(rxDemod)));
+
+% additional demod distribution debug
+u = unique(rxDemod);
+fprintf('dbg-demod-uniq: ');
+fprintf('%d ', u(1:min(16,end)));
+fprintf('\n');
+counts = histcounts(double(rxDemod), -0.5:1:(double(p.M)-0.5));
+fprintf('dbg-demod-hist: ');
+fprintf('%d ', counts);
+fprintf('\n');
+
+try
+    % keep your original call
+    [imgU8, bitErrors, nBits, nCorrSyms] = decodeAndMeasure(rxDemod, state.rsDec, state.prbsSeq, state.dataNeeded, payload, p);
+
+    fprintf('dbg-pre-decode: rxDemod len=%d | mod(len,fec.n)=%d | mod(len,fec.k)=%d\n', ...
+        length(rxDemod), mod(length(rxDemod), state.fec.n), mod(length(rxDemod), state.fec.k));
+
+    % extra decode-side debug without changing behavior
+    fprintf('dbg-measure: bitErrors=%d nBits=%d nCorrSyms=%d\n', bitErrors, nBits, nCorrSyms);
+
+    if ~isempty(imgU8)
+        fprintf('dbg-img: len=%d | min=%d max=%d unique=%d\n', ...
+            length(imgU8), min(imgU8), max(imgU8), numel(unique(imgU8)));
+        fprintf('dbg-img-head: ');
+        fprintf('%d ', imgU8(1:min(16,end)));
+        fprintf('\n');
     end
 
-    title(ui.axSc, sprintf('constellation | fps=%.2f | ber=%.3e | mids=%d | mode=%s', fps, ber, state.numMidambles, p.MODE));
+    state.totalCorrectedSymbols = state.totalCorrectedSymbols + nCorrSyms;
+    set(ui.hRx, 'CData', reshape(imgU8, p.imgR, p.imgC));
 
-    fprintf('dbg: frame=%d | fps=%.2f | ber=%.3e | rsCorrSyms=%d\n', state.totalFrames, fps, ber, nCorrSyms);
+    state.totalBitErrors = state.totalBitErrors + bitErrors;
+    state.totalBits = state.totalBits + nBits;
+    state.totalFrames = state.totalFrames + 1;
 
-    drawnow limitrate;
+catch err
+    fprintf('dbg-decode: %s at line %d | func=%s\n', err.message, err.stack(1).line, err.stack(1).name);
+    if ~isempty(err.stack)
+        nst = min(5, numel(err.stack));
+        fprintf('dbg-decode-stack:\n');
+        for ii = 1:nst
+            fprintf('  #%d %s:%d (%s)\n', ii, err.stack(ii).file, err.stack(ii).line, err.stack(ii).name);
+        end
+    end
+    continue;
+end
+
+elapsed = toc(state.startTime);
+fps = state.totalFrames / max(elapsed, 1e-9);
+ber = state.totalBitErrors / max(state.totalBits, 1);
+
+if ~isempty(ui.hSc) && isgraphics(ui.hSc)
+    set(ui.hSc, 'XData', real(rxPay(1:min(2000,end))), 'YData', imag(rxPay(1:min(2000,end))));
+end
+
+title(ui.axSc, sprintf('constellation | fps=%.2f | ber=%.3e | mids=%d | mode=%s', fps, ber, state.numMidambles, p.MODE));
+fprintf('dbg: frame=%d | fps=%.2f | ber=%.3e | rsCorrSyms=%d\n', state.totalFrames, fps, ber, nCorrSyms);
+
+drawnow limitrate;
 end
