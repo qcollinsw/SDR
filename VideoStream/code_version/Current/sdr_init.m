@@ -28,7 +28,7 @@ state.midLen = state.preLen;
 state.postLen = state.preLen;
 
 state.dataNeeded = p.imgR * p.imgC;
-state.numMidambles = floor(state.dataNeeded / 4800);
+state.numMidambles = floor(state.dataNeeded / 500);
 
 state.totalMsgLen = ceil(state.dataNeeded / state.fec.k) * state.fec.k;
 state.padLen = state.totalMsgLen - state.dataNeeded;

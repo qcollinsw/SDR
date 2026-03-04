@@ -12,7 +12,7 @@ p.snrDb = 20;
 
 p.sps = 4;
 p.Fs = 100000;
-p.freqOffsetHz = 100;
+p.freqOffsetHz = 2500;
 
 p.centerFreq = 2.45e9;
 p.txGain = -10;
