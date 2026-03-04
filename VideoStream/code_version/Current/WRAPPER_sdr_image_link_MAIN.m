@@ -2,9 +2,9 @@
 clear; close all; clc;
 %% Setup
 % mode: 'simulation' | 'transmit' | 'receive'
-MODE = 'receive';
+MODE = 'simulation';
 M = 16;
-verbose_debug = false;
+verbose_debug = true;
 
 %------------------------------------------------------------------------------------
 
@@ -86,8 +86,9 @@ while state.RUNNING && isvalid(ui.fig)
     end
 
 %% barker code and frame sync
+
 [rxFrame, rxPay, payloadChunks, anchorPhase, anchorCorr, bestPrePos, bestPostPos, success] = ...
-    barker_frame_hunter(rxData_proc, state, verbose_debug);
+    barker_frame_hunter(rxData_proc, state, verbose_debug, MODE);
 
 if ~success
     continue;

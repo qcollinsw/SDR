@@ -70,6 +70,8 @@ state.padLen = state.totalMsgLen - state.dataNeeded;
 
 state.codedPayloadLen = (state.totalMsgLen / state.fec.k) * state.fec.n;
 
+
+
 state.srrc = rcosdesign(0.25, 10, p.sps, 'sqrt');
 
 state.rsEnc = comm.RSEncoder('CodewordLength', state.fec.n, 'MessageLength', state.fec.k);

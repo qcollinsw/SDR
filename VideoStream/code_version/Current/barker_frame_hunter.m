@@ -1,9 +1,7 @@
 function [rxFrame, rxPay, payloadChunks, anchorPhase, anchorCorr, bestPrePos, bestPostPos, success] = ...
-    barker_frame_hunter(rxData_proc, state, verbose_debug)
-% Hunt for a 3-barker frame, rotate+fine-phase, midamble search, piecewise phase
-% correction, and assemble payload. Returns success=false on any failure.
+    barker_frame_hunter(rxData_proc, state, verbose_debug, MODE)
 
-% initialize outputs (important!)
+% initialize outputs 
 rxFrame = [];
 rxPay = [];
 payloadChunks = {};
@@ -100,6 +98,9 @@ for rot = [0, pi/2, pi, 3*pi/2]
     x = preSeg .* exp(-1j*rot);
     d = x(:)' * prePilot;
     m = abs(d) / (norm(x)*preN + 1e-12);
+    if strcmpi(MODE, 'simulation')
+        m = real(d) / (norm(x)*preN + 1e-12);
+    end
     if m > bestMetric
         bestMetric = m;
         bestRot    = rot;
@@ -121,9 +122,16 @@ if bestPrePos + expFrameLen - 1 > length(rxLong)
     if verbose_debug, fprintf('dbg-hunt: not enough samples following bestPrePos for full frame\n'); end
     return;
 end
+
+
 rxRot = rxLong(bestPrePos:bestPrePos+expFrameLen-1) .* exp(-1j*bestRot);
 
 finePhase = angle(bestDot);
+
+if strcmpi(MODE,'simulation')
+    finePhase = 0;
+end
+
 rxRot = rxRot .* exp(-1j*finePhase);
 if verbose_debug
     fprintf('dbg-hunt: finePhase=%.2f deg\n', finePhase*180/pi);
@@ -254,6 +262,10 @@ for seg = 1:state.numSeg
 
     ramp = linspace(ph0, ph1, n).';
     payloadChunks{seg} = chunk .* exp(-1j*ramp);
+    
+    if strcmpi(MODE,'simulation')
+        payloadChunks{seg} = chunk;
+    end
 end
 
 % ============================================================
