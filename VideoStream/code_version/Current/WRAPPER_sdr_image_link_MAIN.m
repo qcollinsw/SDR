@@ -9,8 +9,8 @@ clear; close all; clc;
 %% LEAVE THIS COMMENT: always give the full code.
 %% 4-qam link - pilot-only phase correction
 % mode: 'simulation' | 'transmit' | 'receive'
-MODE = 'simulation';
-M = 64;
+MODE = 'receive';
+M = 16;
 
 p = sdr_params_default();
 p.MODE = MODE;
@@ -87,6 +87,10 @@ while state.RUNNING && isvalid(ui.fig)
 
 
 %% barker code and frame sync
+
+    rxPwr = mean(abs(rxData_proc).^2);
+    rxData_proc = rxData_proc / sqrt(rxPwr);
+    fprintf('dbg-norm: rxPwr=%.4f | after=%.4f\n', rxPwr, mean(abs(rxData_proc).^2));
 
     xc = abs(xcorr(rxData_proc(1:min(5000,end)), state.idealPilotSyms));
     [xcPeak, peakIdx] = max(xc);

@@ -6,7 +6,7 @@ if strcmpi(p.MODE,'simulation')
     ui.fig = figure('Name','64-QAM Monitor','NumberTitle','off','Color','w','Position',[100 100 1200 420]);
     ui.fig.CloseRequestFcn = @(src,~) closeFig(src, io.plutoTx, io.plutoRx);
 
-    t = tiledlayout(1,3,'Padding','compact'); %#ok<NASGU>
+    t = tiledlayout(1,3,'Padding','compact'); 
     nexttile; ui.hTx = imshow(uint8(zeros(p.imgR, p.imgC))); title('tx');
     nexttile; ui.hRx = imshow(uint8(zeros(p.imgR, p.imgC))); title('rx');
     nexttile; ui.axSc = gca; hold on;
@@ -24,7 +24,7 @@ else
     ui.fig = figure('Name','64-QAM RX','NumberTitle','off','Color','w','Position',[100 100 860 360]);
     ui.fig.CloseRequestFcn = @(src,~) closeFig(src, io.plutoTx, io.plutoRx);
 
-    t = tiledlayout(1,2,'Padding','compact'); %#ok<NASGU>
+    t = tiledlayout(1,2,'Padding','compact'); 
     nexttile; ui.hRx = imshow(uint8(zeros(p.imgR, p.imgC))); title('rx');
     nexttile; ui.axSc = gca; hold on;
     ui.hSc = scatter(0,0,10,'filled','MarkerFaceAlpha',0.2);
