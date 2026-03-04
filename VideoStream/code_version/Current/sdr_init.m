@@ -1,6 +1,8 @@
 % File: sdr_init.m
 function [state, io, ui] = sdr_init(p)
 
+% state init for 3-barker pilots (bpsk), plus payload/fec sizing as before
+
 if abs(log2(p.M) - round(log2(p.M))) > 0
     error('M must be a power of two.');
 end
@@ -13,13 +15,18 @@ rs_m = log2(p.M);
 state.fec.n = 2^rs_m - 1;
 state.fec.k = state.fec.n - 12;
 
-pnGen = comm.PNSequence('Polynomial', [7 6 0], ...
-    'InitialConditions', ones(1,7), ...
-    'SamplesPerFrame', 127);
-state.pilotSeq = uint8(mod(double(pnGen()), p.M));
-state.preLen = length(state.pilotSeq);
-state.midLen = state.preLen;
-state.postLen = state.preLen;
+% classic barker codes, mapped to bpsk (+1/-1)
+b13 = [ 1  1  1  1  1 -1 -1  1  1 -1  1 -1  1].';
+b11 = [ 1  1  1 -1 -1 -1  1 -1 -1  1 -1].';
+b7  = [ 1  1  1 -1 -1  1 -1].';
+
+state.prePilot  = b13;                  % real bpsk pilots
+state.midPilot  = b11;
+state.postPilot = b7;
+
+state.preLen  = length(state.prePilot);
+state.midLen  = length(state.midPilot);
+state.postLen = length(state.postPilot);
 
 state.dataNeeded = p.imgR * p.imgC;
 state.numMidambles = floor(state.dataNeeded / 500);
@@ -30,6 +37,9 @@ state.padLen = state.totalMsgLen - state.dataNeeded;
 state.codedPayloadLen = (state.totalMsgLen / state.fec.k) * state.fec.n;
 
 state.srrc = rcosdesign(0.25, 10, p.sps, 'sqrt');
+
+
+
 
 state.rsEnc = comm.RSEncoder('CodewordLength', state.fec.n, 'MessageLength', state.fec.k);
 state.rsDec = comm.RSDecoder('CodewordLength', state.fec.n, 'MessageLength', state.fec.k);
@@ -48,13 +58,19 @@ state.carrierSync = comm.CarrierSynchronizer( ...
     'NormalizedLoopBandwidth', 0.001, ...
     'DampingFactor', 1);
 
-state.pilotSeq = uint8(mod(double(state.pilotSeq), p.M));
-
+% --- ideal pilot symbols for each marker type ---
 if strcmpi(p.modType,'psk') && p.M <= 8
-    state.idealPilotSyms = pskmod(double(state.pilotSeq), p.M, 0);
+    state.idealPreSyms  = pskmod(double(state.preSeq),  p.M, 0);
+    state.idealMidSyms  = pskmod(double(state.midSeq),  p.M, 0);
+    state.idealPostSyms = pskmod(double(state.postSeq), p.M, 0);
 else
-    state.idealPilotSyms = qammod(double(state.pilotSeq), p.M, 'UnitAveragePower', true);
+    state.idealPreSyms  = qammod(double(state.preSeq),  p.M, 'UnitAveragePower', true);
+    state.idealMidSyms  = qammod(double(state.midSeq),  p.M, 'UnitAveragePower', true);
+    state.idealPostSyms = qammod(double(state.postSeq), p.M, 'UnitAveragePower', true);
 end
+
+% legacy alias
+state.idealPilotSyms = state.idealPreSyms;
 
 state.trimSamples = 10 * p.sps;
 
@@ -103,11 +119,9 @@ io.plutoTx = [];
 io.plutoRx = [];
 
 % warmup/discard controls for rx streaming
-% you must discard these in your receive loop after calling io.plutoRx()
-state.rxWarmupFrames = 8;                 % throw away the first n rx frames after start
-state.rxPrerollSamples = 200000;          % throw away this many samples at the front of each capture window
+state.rxWarmupFrames = 8;
+state.rxPrerollSamples = 200000;
 
-% size capture to include preroll + frame + trim on both sides
 samplesPerFrameCore = ((state.txFrameSyms * p.sps) + 2*state.trimSamples);
 samplesPerFrame = samplesPerFrameCore + state.rxPrerollSamples;
 
@@ -119,7 +133,6 @@ if strcmpi(p.MODE,'transmit')
         'ChannelMapping', 1);
 
 elseif strcmpi(p.MODE,'receive')
-    % critical: disable agc and set a fixed gain
     rxGain = -10;
     if isfield(p,'rxGain'), rxGain = p.rxGain; end
 
