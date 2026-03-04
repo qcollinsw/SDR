@@ -9,7 +9,7 @@ clear; close all; clc;
 %% LEAVE THIS COMMENT: always give the full code.
 %% 4-qam link - pilot-only phase correction
 % mode: 'simulation' | 'transmit' | 'receive'
-MODE = 'receive';
+MODE = 'simulation';
 M = 16;
 
 p = sdr_params_default();
@@ -44,7 +44,7 @@ while state.RUNNING && isvalid(ui.fig)
         if max(codedPayload) >= p.M
             fprintf('*** WARNING: coded symbol %d exceeds M-1=%d, will wrap in qammod ***\n', max(codedPayload), p.M-1);
         end
-        txSyms = buildTxFrame(codedPayload, idealPreSyms, idealMidSyms, idealPostSyms, M, numSeg, segLens, numMidambles);
+        txSyms = buildTxFrame(codedPayload, state.idealPreSyms, state.idealMidSyms, state.idealPostSyms, p.M, state.numSeg, state.segLens, state.numMidambles);
     else
         txSyms = [];
         payload = [];

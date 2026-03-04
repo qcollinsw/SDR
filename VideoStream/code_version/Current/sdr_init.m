@@ -1,8 +1,6 @@
 % File: sdr_init.m
 function [state, io, ui] = sdr_init(p)
 
-% state init for 3-barker pilots (bpsk), plus payload/fec sizing as before
-
 if abs(log2(p.M) - round(log2(p.M))) > 0
     error('M must be a power of two.');
 end
@@ -15,18 +13,28 @@ rs_m = log2(p.M);
 state.fec.n = 2^rs_m - 1;
 state.fec.k = state.fec.n - 12;
 
-% classic barker codes, mapped to bpsk (+1/-1)
+% 3-barker pilots as chips in {+1,-1}; treat as already-modulated bpsk symbols
 b13 = [ 1  1  1  1  1 -1 -1  1  1 -1  1 -1  1].';
 b11 = [ 1  1  1 -1 -1 -1  1 -1 -1  1 -1].';
 b7  = [ 1  1  1 -1 -1  1 -1].';
 
-state.prePilot  = b13;                  % real bpsk pilots
-state.midPilot  = b11;
-state.postPilot = b7;
+state.preSeq  = b13;
+state.midSeq  = b11;
+state.postSeq = b7;
+
+state.prePilot  = complex(b13, 0);
+state.midPilot  = complex(b11, 0);
+state.postPilot = complex(b7, 0);
 
 state.preLen  = length(state.prePilot);
 state.midLen  = length(state.midPilot);
 state.postLen = length(state.postPilot);
+
+% these are the symbols that get inserted into the tx frame and used for correlation
+state.idealPreSyms   = state.prePilot(:);
+state.idealMidSyms   = state.midPilot(:);
+state.idealPostSyms  = state.postPilot(:);
+state.idealPilotSyms = state.idealPreSyms;
 
 state.dataNeeded = p.imgR * p.imgC;
 state.numMidambles = floor(state.dataNeeded / 500);
@@ -37,9 +45,6 @@ state.padLen = state.totalMsgLen - state.dataNeeded;
 state.codedPayloadLen = (state.totalMsgLen / state.fec.k) * state.fec.n;
 
 state.srrc = rcosdesign(0.25, 10, p.sps, 'sqrt');
-
-
-
 
 state.rsEnc = comm.RSEncoder('CodewordLength', state.fec.n, 'MessageLength', state.fec.k);
 state.rsDec = comm.RSDecoder('CodewordLength', state.fec.n, 'MessageLength', state.fec.k);
@@ -57,20 +62,6 @@ state.carrierSync = comm.CarrierSynchronizer( ...
     'SamplesPerSymbol', 1, ...
     'NormalizedLoopBandwidth', 0.001, ...
     'DampingFactor', 1);
-
-% --- ideal pilot symbols for each marker type ---
-if strcmpi(p.modType,'psk') && p.M <= 8
-    state.idealPreSyms  = pskmod(double(state.preSeq),  p.M, 0);
-    state.idealMidSyms  = pskmod(double(state.midSeq),  p.M, 0);
-    state.idealPostSyms = pskmod(double(state.postSeq), p.M, 0);
-else
-    state.idealPreSyms  = qammod(double(state.preSeq),  p.M, 'UnitAveragePower', true);
-    state.idealMidSyms  = qammod(double(state.midSeq),  p.M, 'UnitAveragePower', true);
-    state.idealPostSyms = qammod(double(state.postSeq), p.M, 'UnitAveragePower', true);
-end
-
-% legacy alias
-state.idealPilotSyms = state.idealPreSyms;
 
 state.trimSamples = 10 * p.sps;
 
@@ -118,7 +109,6 @@ state.startTime = tic;
 io.plutoTx = [];
 io.plutoRx = [];
 
-% warmup/discard controls for rx streaming
 state.rxWarmupFrames = 8;
 state.rxPrerollSamples = 200000;
 
