@@ -2,9 +2,9 @@
 clear; close all; clc;
 %% Setup
 % mode: 'simulation' | 'transmit' | 'receive'
-MODE = 'simulation';
+MODE = 'receive';
 M = 16;
-verbose_debug = true;
+verbose_debug = false;
 
 %------------------------------------------------------------------------------------
 
@@ -23,10 +23,13 @@ if (verbose_debug)
     fprintf('coding: rs(%d,%d) | totalMsgLen=%d | codedPayloadLen=%d\n\n', state.fec.n, state.fec.k, state.totalMsgLen, state.codedPayloadLen);
     m_bits = log2(p.M);
     fprintf('dbg-config: scaleTx=%.6f | scaleRx=%.6f\n', m_bits, p.scaleTx, p.scaleRx);
-    fprintf('dbg-config: rs field=GF(2^%d) | rs n=%d | rs k=%d  | max_qam_idx=%d\n', ...
+    fprintf('dbg-config: rs field=GF(2^%d) | rs n=%d | rs k=%d  | max_aqam_idx=%d\n', ...
          state.fec.n, state.fec.k, p.M - 1);
 end
 
+startTime = tic;
+lastFrameTime = tic;
+fps = 0;
 
 while state.RUNNING && isvalid(ui.fig)
 %% generate message
@@ -149,8 +152,18 @@ catch err
 end
 
 elapsed = toc(state.startTime);
-fps = state.totalFrames / max(elapsed, 1e-9);
 ber = state.totalBitErrors / max(state.totalBits, 1);
+
+dt = toc(lastFrameTime);
+lastFrameTime = tic;
+inst_fps = 1 / max(dt, 1e-9);
+alpha = 0.2;
+if fps == 0
+fps = inst_fps;
+else
+fps = (1 - alpha) * fps + alpha * inst_fps;
+end
+
 
 if ~isempty(ui.hSc) && isgraphics(ui.hSc)
     set(ui.hSc, 'XData', real(rxPay(1:min(2000,end))), 'YData', imag(rxPay(1:min(2000,end))));
