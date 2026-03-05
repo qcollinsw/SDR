@@ -3,7 +3,7 @@ clear; close all; clc;
 %% Setup
 % mode: 'simulation' | 'transmit' | 'receive'
 MODE = 'receive';
-M = 16;
+M = 32;
 verbose_debug = false;
 
 %------------------------------------------------------------------------------------
@@ -152,8 +152,6 @@ catch err
 end
 
 elapsed = toc(state.startTime);
-ber = state.totalBitErrors / max(state.totalBits, 1);
-
 dt = toc(lastFrameTime);
 lastFrameTime = tic;
 inst_fps = 1 / max(dt, 1e-9);
@@ -169,8 +167,8 @@ if ~isempty(ui.hSc) && isgraphics(ui.hSc)
     set(ui.hSc, 'XData', real(rxPay(1:min(2000,end))), 'YData', imag(rxPay(1:min(2000,end))));
 end
 
-title(ui.axSc, sprintf('constellation | fps=%.2f | ber=%.3e | mids=%d | mode=%s', fps, ber, state.numMidambles, p.MODE));
-fprintf('dbg: frame=%d | fps=%.2f | ber=%.3e | rsCorrSyms=%d\n', state.totalFrames, fps, ber, nCorrSyms);
+title(ui.axSc, sprintf('constellation | fps=%.2f | mids=%d | mode=%s', fps, state.numMidambles, p.MODE));
+fprintf('dbg: frame=%d | fps=%.2f | rsCorrSyms=%d\n', state.totalFrames, fps, nCorrSyms);
 
 drawnow limitrate;
 end

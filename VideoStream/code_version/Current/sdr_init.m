@@ -16,7 +16,7 @@ p.imgC = 160;
 p.snrDb = 20;
 
 p.sps = 4;
-p.Fs = 500000;
+p.Fs = 300000;
 p.freqOffsetHz = 2500;
 
 p.centerFreq = 2.45e9;
