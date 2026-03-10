@@ -35,9 +35,14 @@ if abs(log2(p.M) - round(log2(p.M))) > 0
     error('M must be a power of two.');
 end
 
+% rs_m = log2(p.M);
+% state.fec.n = 2^rs_m - 1;
+% state.fec.k = state.fec.n - 12;
+
 rs_m = log2(p.M);
 state.fec.n = 2^rs_m - 1;
-state.fec.k = state.fec.n - 12;
+target_rate = 0.75;
+state.fec.k = round(state.fec.n * target_rate);
 
 % 3-barker pilots as chips in {+1,-1}; treat as already-modulated bpsk symbols
 b13 = [ 1  1  1  1  1 -1 -1  1  1 -1  1 -1  1].';
@@ -64,6 +69,7 @@ state.idealPilotSyms = state.idealPreSyms;
 
 state.dataNeeded = p.imgR * p.imgC;
 state.numMidambles = floor(state.dataNeeded / 500);
+% state.numMidambles = 0;
 
 state.totalMsgLen = ceil(state.dataNeeded / state.fec.k) * state.fec.k;
 state.padLen = state.totalMsgLen - state.dataNeeded;
