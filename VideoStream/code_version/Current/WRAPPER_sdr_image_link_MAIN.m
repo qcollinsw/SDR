@@ -3,7 +3,7 @@ clear; close all; clc;
 %% Setup
 % mode: 'simulation' | 'transmit' | 'receive'
 MODE = 'receive';
-M = 32;
+M = 64;
 verbose_debug = false;
 
 %------------------------------------------------------------------------------------

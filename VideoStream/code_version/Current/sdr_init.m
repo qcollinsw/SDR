@@ -16,7 +16,15 @@ p.imgC = 160;
 p.snrDb = 20;
 
 p.sps = 4;
-p.Fs = 300000;
+
+if (p.MODE == 16)
+    p.Fs = 300000;
+elseif(p.MODE == 32)
+    p.Fs = 200000;
+else
+    p.Fs = 100000;
+end
+
 p.freqOffsetHz = 2500;
 
 p.centerFreq = 2.45e9;
